@@ -1,10 +1,16 @@
 | Test | Pass/Fail | Final outcome | Tool calls | Duplicate/wrong write? | End-of-speech to first audio | API latency (p50) | Notes |
 |---|---|---|---|---|---:|---:|---|
-| T1 | PASS | all checks passed | 2 (check_availability, create_reservation) | no | see voice run | 6.61 ms | Create available reservation |
+| T1 | PASS | all checks passed | 2 (check_availability, create_reservation) | no | see voice run | 5.8 ms | Create available reservation |
+| T2 | PASS | all checks passed | 3 (check_availability, check_availability, create_reservation) | no | see voice run | 6.71 ms | Unavailable time |
+| T3 | PASS | all checks passed | 3 (check_availability, check_availability, create_reservation) | no | see voice run | 7.12 ms | Correction and barge-in |
+| T4 | PASS | all checks passed | 3 (find_reservation, check_availability, modify_reservation) | no | see voice run | 6.93 ms | Modify existing reservation |
+| T5 | PASS | all checks passed | 2 (find_reservation, cancel_reservation) | no | see voice run | 5.34 ms | Cancel existing reservation |
+| T6 | PASS | all checks passed | 1 (check_availability) | no | see voice run | 7.86 ms | Temporary API failure |
+| T7 | PASS | all checks passed | 3 (check_availability, create_reservation, create_reservation) | no | see voice run | 6.87 ms | Duplicate protection |
 
 - Model: `openai:gpt-5.4-nano`
-- Task success rate: **1/1** (100%)
-- Check-level pass rate: **5/5**
+- Task success rate: **7/7** (100%)
+- Check-level pass rate: **33/33**
 - Duplicate/wrong writes: **0**
-- Text-mode turn latency (LLM + tools, no audio): p50 1528.75 ms, p95 2642.93 ms
-- Reservation API latency: p50 6.61 ms, p95 578.04 ms
+- Text-mode turn latency (LLM + tools, no audio): p50 2125.56 ms, p95 2758.47 ms
+- Reservation API latency: p50 6.87 ms, p95 11.24 ms

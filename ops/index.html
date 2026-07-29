@@ -71,9 +71,6 @@
   .card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px; }
   .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:0.05em;
              color:var(--ink-2); margin:0 0 10px; font-weight:600; }
-  .cal { float:right; text-transform:none; letter-spacing:0; font-weight:500;
-         color:var(--info); text-decoration:none; }
-  .cal:hover { text-decoration:underline; }
 
   table { border-collapse:separate; border-spacing:2px; width:100%; }
   th { font-size:11px; color:var(--muted); font-weight:500; text-align:center; padding-bottom:2px;
@@ -156,10 +153,7 @@
 </div>
 
 <div class="card" id="resCard" style="margin-top:14px; display:none">
-  <h2>Reservations this call
-    <a class="cal" href="/calendar.ics" title="Subscribe in Google, Outlook or Apple Calendar">
-      calendar feed (.ics)</a>
-  </h2>
+  <h2>Reservations this call</h2>
   <div id="reservations"></div>
 </div>
 

@@ -11,8 +11,8 @@ are what make the agent reliable.
 | Task success | **7 / 7** | **7 / 7** |
 | Checks | **33 / 33** | **33 / 33** |
 | Duplicate / wrong writes | **0** | **0** |
-| Harness turn latency p50 | **1,617 ms** | 2,525 ms |
-| Harness turn latency p95 | **2,377 ms** | 4,053 ms |
+| Harness turn latency p50 | **1,617 ms** | 2,126 ms |
+| Harness turn latency p95 | **2,377 ms** | 2,758 ms |
 | Reservation API p50 | 8.9 ms | 10.0 ms |
 
 Detailed tables below are the Gemini run (`eval/results/results.json`); the

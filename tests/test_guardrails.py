@@ -21,8 +21,7 @@ async def _book(agent: LumaAgent, date: str, time: str, size: int, **over) -> di
     """Check availability then create, the way the agent is supposed to."""
     await agent.check_availability(None, date, time, size)
     payload = {**BOOKED, **over}
-    return await agent.create_reservation(
-        None,
+    kwargs = dict(
         name=payload["name"],
         phone=payload["phone"],
         date=date,
@@ -30,6 +29,7 @@ async def _book(agent: LumaAgent, date: str, time: str, size: int, **over) -> di
         party_size=size,
         caller_confirmed=True,
     )
+    return await agent.create_reservation(None, **kwargs)
 
 
 # ------------------------------------------------------------- availability

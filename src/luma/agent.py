@@ -435,19 +435,6 @@ class LumaAgent(Agent):
                 },
             )
 
-        if not caller_confirmed:
-            return self._finish(
-                "create_reservation",
-                args,
-                {
-                    "status": "confirmation_required",
-                    "next_step": (
-                        "Read the date, time, party size and name back, then call "
-                        "again with caller_confirmed=true."
-                    ),
-                },
-            )
-
         # Guard 1 -- we already booked exactly this during this call. Checked
         # first and answered from memory: a repeat costs no network call and
         # cannot be derailed by availability state that moved underneath us
@@ -476,7 +463,25 @@ class LumaAgent(Agent):
                 },
             )
 
-        # Guard 3 -- someone with this number may already hold a table at this
+        # Guard 3 -- the read-back. Only now, with the table known to exist.
+        if not caller_confirmed:
+            return self._finish(
+                "create_reservation",
+                args,
+                {
+                    "status": "confirmation_required",
+                    "say_to_caller": (
+                        f"So that's {clean_name}, {spoken_date(iso_date)} at "
+                        f"{spoken_time(hhmm)}, for {size}. Shall I book it?"
+                    ),
+                    "next_step": (
+                        "Read that back, WAIT for the caller to answer, then call "
+                        "again with the same details and caller_confirmed=true."
+                    ),
+                },
+            )
+
+        # Guard 4 -- someone with this number may already hold a table at this
         # date and time from an earlier call. A single E.164 lookup, not the
         # multi-spelling fallback used by find_reservation: our own writes are
         # always E.164, and this sits on the critical path of every booking,
@@ -502,7 +507,7 @@ class LumaAgent(Agent):
                     },
                 )
 
-        # Guard 4 -- deterministic key, so a retry lands on the same record.
+        # Guard 5 -- deterministic key, so a retry lands on the same record.
         key = booking_idempotency_key(clean_name, e164, iso_date, hhmm, size)
         result = await self._api.create_reservation(
             name=clean_name,
@@ -695,7 +700,10 @@ class LumaAgent(Agent):
                 args,
                 {
                     "status": "confirmation_required",
-                    "next_step": "read the change back, then call again with caller_confirmed=true",
+                    "next_step": (
+                        "Read the change back, WAIT for the caller to answer, then "
+                        "call again with the same details and caller_confirmed=true."
+                    ),
                 },
             )
 
@@ -821,8 +829,9 @@ class LumaAgent(Agent):
                 {
                     "status": "confirmation_required",
                     "next_step": (
-                        "read the booking back and ask the caller to confirm the "
-                        "cancellation, then call again with caller_confirmed=true"
+                        "Read the booking back, ask the caller to confirm the "
+                        "cancellation, WAIT for their answer, then call again with "
+                        "caller_confirmed=true."
                     ),
                 },
             )
