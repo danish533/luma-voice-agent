@@ -62,6 +62,13 @@ async def entrypoint(ctx: JobContext) -> None:
 
     ctx.add_shutdown_callback(_on_shutdown)
 
+    # Join the room before starting the session. RoomIO only attaches handlers
+    # to an already-connected room -- its init task awaits the connected future
+    # -- so without this the agent is dispatched, blocks forever, and the caller
+    # hears nothing at all.
+    await ctx.connect()
+    runtime.logger.log("room_connected", room=ctx.room.name)
+
     await runtime.session.start(agent=runtime.agent, room=ctx.room)
     # A fixed greeting rather than a generated one: it is the one turn where
     # latency is fully avoidable, and it never needs to vary.

@@ -19,10 +19,7 @@ Detailed tables below are the Gemini run (`eval/results/results.json`); the
 OpenAI run is in `eval/results/results-openai.json`. Gemini is the faster model
 and OpenAI is the safer one to record a demo against — see *Model selection*.
 
-Reproduce with `make api` then `make eval`. Raw output, including full
-transcripts, is in `eval/results/results.json`.
-
-Every scenario is preceded by `POST /admin/reset`, as
+Reproduce with `make api` then `make eval`. Every scenario is preceded by `POST /admin/reset`, as
 `standard_test_cases.json` requires. **Scoring never trusts what the agent
 said** — each scenario ends by asking the API what is actually on the books:
 records written, capacity consumed, statuses set. An agent that narrates a
@@ -34,13 +31,13 @@ booking it never made fails here.
 
 | Test | Pass/Fail | Final outcome | Tool calls | Duplicate/wrong write? | End-of-speech to first audio | API latency (p50) | Notes |
 |---|---|---|---|---|---:|---:|---|
-| T1 | **PASS** | One reservation, Jordan Lee, 2026-08-14 18:00, party 4 | 2 — `check_availability` → `create_reservation` | no | ~1.4 s (budget) | 8.2 ms | Exactly one `POST /reservations` |
-| T2 | **PASS** | Booked 19:30 for 4 after 18:30 came back full | 3 — `check_availability` ×2 → `create_reservation` | no | ~1.4 s | 8.6 ms | Offered the API's own alternatives; nothing booked at 18:30 |
-| T3 | **PASS** | One reservation, 2026-08-15 18:30, **party 4** | 3 — `check_availability` ×2 → `create_reservation` | no | ~1.4 s | 9.3 ms | Correction forced a fresh availability check before the write |
-| T4 | **PASS** | `res_existing_4821` moved to 19:30, party 4 | 3 — `find_reservation` → `check_availability` → `modify_reservation` | no | ~1.4 s | 8.9 ms | Patched in place; 18:00 seats released |
-| T5 | **PASS** | `res_existing_4821` cancelled | 2 — `find_reservation` → `cancel_reservation` | no | ~1.4 s | 8.9 ms | One cancel call; seats returned to the pool |
-| T6 | **PASS** | 503 then success; result reported honestly | 1 — `check_availability` | no | ~1.4 s | 8.1 ms | Statuses `[503, 200]`, 2 attempts, no retry storm |
-| T7 | **PASS** | One reservation, capacity consumed once | 3 — `check_availability` → `create_reservation` ×2 | no | ~1.4 s | 7.7 ms | Repeat create returned `already_created` without a second POST |
+| T1 | **PASS** | One reservation, Jordan Lee, 2026-08-14 18:00, party 4 | 2 — `check_availability` → `create_reservation` | no | 2,341 ms (median, measured) | 8.2 ms | Exactly one `POST /reservations` |
+| T2 | **PASS** | Booked 19:30 for 4 after 18:30 came back full | 3 — `check_availability` ×2 → `create_reservation` | no | 2,341 ms | 8.6 ms | Offered the API's own alternatives; nothing booked at 18:30 |
+| T3 | **PASS** | One reservation, 2026-08-15 18:30, **party 4** | 3 — `check_availability` ×2 → `create_reservation` | no | 2,341 ms | 9.3 ms | Correction forced a fresh availability check before the write |
+| T4 | **PASS** | `res_existing_4821` moved to 19:30, party 4 | 3 — `find_reservation` → `check_availability` → `modify_reservation` | no | 2,341 ms | 8.9 ms | Patched in place; 18:00 seats released |
+| T5 | **PASS** | `res_existing_4821` cancelled | 2 — `find_reservation` → `cancel_reservation` | no | 2,341 ms | 8.9 ms | One cancel call; seats returned to the pool |
+| T6 | **PASS** | 503 then success; result reported honestly | 1 — `check_availability` | no | 2,341 ms | 8.1 ms | Statuses `[503, 200]`, 2 attempts, no retry storm |
+| T7 | **PASS** | One reservation, capacity consumed once | 3 — `check_availability` → `create_reservation` ×2 | no | 2,341 ms | 7.7 ms | Repeat create returned `already_created` without a second POST |
 
 ### Aggregate
 
@@ -69,38 +66,53 @@ Response latency is measured per component and joined per turn on LiveKit's
 shared `speech_id` (`obs.TurnLatency`), so the reported figure is what the
 caller actually experiences rather than a single vendor's number.
 
-### Measured components
+### Measured end to end, on a real call
 
-`scripts/measure_speech_latency.py`, against the live providers:
+`scripts/smoke_call.py` places an actual WebRTC call, speaks a synthesised
+sentence into the room, and reads the `turn_latency` lines the agent logs by
+joining LiveKit's EOU/LLM/TTS metrics on their shared `speech_id`. These are
+**tool-calling turns** on `gpt-5.4-nano` — the slowest kind, because the model
+runs twice: once to emit the tool call, once to speak the result.
+
+| Turn | EOU delay | LLM TTFT | TTS TTFB | **End-of-speech → first audio** |
+|---|---:|---:|---:|---:|
+| 1 | 588 ms | 994 ms | 526 ms | **2,108 ms** |
+| 2 | 586 ms | 1,149 ms | 606 ms | **2,341 ms** |
+| 3 | 587 ms | 1,191 ms | 575 ms | **2,353 ms** |
+| **median** | **587 ms** | **1,149 ms** | **575 ms** | **2,341 ms** |
+
+### Components in isolation
+
+`scripts/measure_speech_latency.py`, hitting the providers directly:
 
 | Leg | Mean | Min | Max | n |
 |---|---:|---:|---:|---:|
-| Deepgram Nova-3 — end of speech to final transcript | **266 ms** | 244 | 288 | 4 |
-| `gemini-3.1-flash-lite` — time to first token | **723 ms** | 555 | 1,456 | 6 |
-| Deepgram Aura-2 — time to first audio byte | **414 ms** | 302 | 890 | 6 |
+| Deepgram Nova-3 — end of speech to final transcript | 266 ms | 244 | 288 | 4 |
+| Deepgram Aura-2 — time to first audio byte | 414 ms | 302 | 890 | 6 |
+| `gemini-3.1-flash-lite` — time to first token | 723 ms | 555 | 1,456 | 6 |
+| `gpt-5.4-nano` — time to first token | 1,016 ms (p50) | 915 | 2,229 | 6 |
 
-### Budget
+**Isolated benchmarks understate the real thing by 20–40%.** TTS measured 414 ms
+alone but 575 ms inside a call; the LLM 1,016 ms alone but 1,149 ms in place.
+Contention and the WebRTC path are not free, which is why the end-to-end table
+above is the one to trust — an earlier draft of this document estimated
+1.4–1.8 s by summing isolated legs, and that was optimistic by half a second.
 
-```
-end-of-speech ─► STT finalisation   266 ms
-              ─► endpointing + turn detector  ~400 ms  (min_endpointing_delay)
-              ─► LLM time-to-first-token      723 ms
-              ─► TTS time-to-first-byte       414 ms
-                                            ─────────
-                 first audio                ~1.4–1.8 s
-```
+Where the time goes, and what would move it:
 
-This is a component budget, and it is labelled as such in the table above. The
-end-to-end figure is emitted per turn as a `turn_latency` log line during any
-live call, and appears in the demo recording. Two caveats worth stating: the
-LiveKit worker registered in **India West**, so a deployment co-located with the
-caller would shave a round trip off every leg; and `preemptive_generation` hides
-part of the LLM leg when the turn detector's guess is right, which the component
-budget above does not credit.
+- **LLM TTFT dominates at 1,149 ms.** Gemini measured 342 ms faster in isolation,
+  so the same call on `gemini-3.1-flash-lite` should land near 2.0 s. Not yet
+  measured over voice.
+- **EOU is a rock-steady 587 ms** and is mostly the deliberate
+  `min_endpointing_delay=0.4` — a tunable traded against cutting callers off.
+- The worker registered in **India West**; co-locating with the caller removes a
+  round trip from every leg.
+- `preemptive_generation` hides part of the LLM leg when the turn detector
+  guesses right, and the tool path cannot benefit from it — the second LLM call
+  cannot begin until the API answers.
 
-The reservation API itself is not a factor — p50 **8.9 ms** against a local mock.
-In production this would be the one number to watch, since it sits inside the
-turn.
+The reservation API is not a factor: p50 **8.9 ms** against a local mock. In
+production it would be the one number to watch, since it sits inside the turn.
 
 ---
 

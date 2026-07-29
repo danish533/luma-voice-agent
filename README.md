@@ -18,7 +18,7 @@ handing off to a human with the whole conversation intact.
    mic/spk              (SFU)            │
                                          ├─ Deepgram Nova-3 STT  (streaming, interim results)
                                          ├─ Silero VAD + LiveKit turn detector
-                                         ├─ LLM (gpt-4.1-mini | gemini-flash)  ← tool calling
+                                         ├─ LLM (gpt-5.4-nano | gemini-flash-lite) ← tool calling
                                          ├─ Deepgram Aura-2 TTS  (streaming)
                                          │
                                          └─ Tool layer ──HTTP──► Reservation API
@@ -87,9 +87,6 @@ and polling would consume that failure before you could demonstrate it. Append
 `?theme=light` or `?theme=dark` to force a mode for screen recording.
 
 Prefer no browser at all? `make console` runs the identical agent against your
-terminal microphone.
-
-**No LiveKit account?** `make console` runs the identical agent against your
 terminal's microphone — no transport, no frontend, no signup.
 
 **Port 8000 taken?** `make api API_PORT=8010` and set `RESERVATION_API_URL`
@@ -100,7 +97,13 @@ to match.
 ```bash
 make test    # 70 guardrail + normalisation tests. No LLM key required.
 make eval    # the seven standard scenarios end to end. Needs an LLM key.
+make smoke   # places a REAL call: speaks a line, checks the agent heard it,
+             # called a tool, and replied. Needs `make api` + `make agent`.
 ```
+
+`make smoke` is the one that catches a broken voice path. Everything can pass
+`make test` and `make eval` while the caller hears nothing at all — that is
+exactly the failure mode a missing `ctx.connect()` produces.
 
 `make eval` writes `eval/results/results.md` and `results.json`.
 
@@ -186,7 +189,7 @@ narrates a perfect booking it never made fails here.
 | Tool-call accuracy | **17 / 17** |
 | Duplicate or wrong writes | **0** |
 | Deterministic guardrail suite | **70 / 70** |
-| End-of-speech to first audio | **~1.4–1.8 s** (measured component budget) |
+| End-of-speech to first audio | **2.3 s** median, measured on a real call |
 | Reservation API latency | p50 **8.9 ms**, p95 **12.3 ms** |
 
 Measured on `gemini-3.1-flash-lite` — chosen on latency, not preference. The

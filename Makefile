@@ -47,3 +47,8 @@ clean-logs: reset
 
 reset:
 	curl -s -X POST http://127.0.0.1:$(API_PORT)/admin/reset
+
+# Places a real call, speaks a synthesised line, and checks the agent heard it,
+# called a tool, and replied. Requires `make api` and `make agent`.
+smoke:
+	$(PY) scripts/smoke_call.py
