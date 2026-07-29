@@ -3,7 +3,10 @@
 VENV ?= .venv
 PY   := $(VENV)/bin/python
 PIP  := $(VENV)/bin/pip
-API_PORT ?= 8000
+# Take the port from RESERVATION_API_URL in .env so the API always starts where
+# the agent is looking. Falls back to 8000, which is what the starter package
+# and its docker-compose use. Override with `make api API_PORT=9000`.
+API_PORT ?= $(or $(shell sed -n 's|^RESERVATION_API_URL=.*://[^:]*:\([0-9][0-9]*\).*|\1|p' .env 2>/dev/null),8000)
 
 install:
 	python3 -m venv $(VENV)

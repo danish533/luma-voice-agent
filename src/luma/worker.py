@@ -13,6 +13,15 @@ from dotenv import load_dotenv
 from livekit.agents import JobContext, JobProcess, WorkerOptions, cli
 from livekit.plugins import silero
 
+# Imported here, at module scope in the *main* process, purely for the side
+# effect of registering its inference runner. The Worker only spawns an
+# inference executor if `_InferenceRunner.registered_runners` is non-empty at
+# construction time. Importing the turn detector lazily inside the job process
+# is too late: the model then fails on every single turn with "no inference
+# executor" and endpointing silently degrades to bare VAD, which is what makes
+# the agent talk over people mid-sentence.
+from livekit.plugins.turn_detector import english as _turn_detector_en  # noqa: F401
+
 from .config import Settings
 from .prompts import GREETING
 from .runtime import build_runtime
@@ -76,7 +85,17 @@ async def entrypoint(ctx: JobContext) -> None:
 
 
 def main() -> None:
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
+    cli.run_app(
+        WorkerOptions(
+            entrypoint_fnc=entrypoint,
+            prewarm_fnc=prewarm,
+            # Keep a process warm. Without this the first call logs "no warmed
+            # process available" and the caller waits several extra seconds in
+            # silence before the greeting — long enough to say "hello? can you
+            # hear me?" into a dead line.
+            num_idle_processes=1,
+        )
+    )
 
 
 if __name__ == "__main__":

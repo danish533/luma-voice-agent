@@ -16,6 +16,7 @@ Three preconditions are enforced here rather than in the prompt:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from livekit.agents import Agent, RunContext, function_tool
@@ -43,16 +44,38 @@ def _invalid(field: str, hint: str) -> dict[str, Any]:
 
 
 def _slot_guidance(date: str | None) -> dict[str, Any]:
-    """What to offer after the API has rejected a slot outright.
+    """Explain *why* the API rejected a slot, and what to ask for instead.
 
-    The API returns a bare 422 with no hint, so we answer from the configured
-    service grid. This is guidance for the *question* to ask next, never a claim
-    that a table is free -- that always comes from a fresh availability call.
+    The API returns a bare 422 for both "we don't open that day" and "we don't
+    seat at that minute", which are very different things to a caller. Telling
+    someone "we don't seat at six" when the real problem is the date produces
+    the nonsense reply "we don't seat at six; we seat at five thirty, six, ...".
+    So the two cases are separated here.
+
+    Neither branch is a claim that a table is free. `times_we_seat` is the
+    service grid, not availability; the model is told so explicitly, because
+    left to itself it will happily read the grid back as if it were open slots.
     """
-    guidance: dict[str, Any] = {"seating_times": [spoken_time(s) for s in SERVICE_SLOTS]}
     if date and date not in BOOKABLE_DATES:
-        guidance["bookable_dates"] = [spoken_date(d) for d in BOOKABLE_DATES]
-    return guidance
+        return {
+            "reason": "date_not_bookable",
+            "say_to_caller": "We're not taking bookings for that date.",
+            "bookable_dates": [spoken_date(d) for d in BOOKABLE_DATES],
+            "instruction": (
+                "Offer only these dates. Do not mention times yet -- you have "
+                "not checked any."
+            ),
+        }
+    return {
+        "reason": "time_not_a_seating",
+        "say_to_caller": "We don't seat at that time.",
+        "times_we_seat": [spoken_time(s) for s in SERVICE_SLOTS],
+        "instruction": (
+            "These are the times we seat, NOT times known to be free. Ask which "
+            "the caller would prefer, then call check_availability. Never say a "
+            "time is available on the strength of this list."
+        ),
+    }
 
 
 class LumaAgent(Agent):
@@ -164,36 +187,35 @@ class LumaAgent(Agent):
                         "spoken": f"{spoken_date(iso_date)} at {spoken_time(hhmm)}",
                     },
                 )
-            return self._finish(
-                "check_availability",
-                args,
-                {
-                    "status": "unavailable",
-                    "date": iso_date,
-                    "time": hhmm,
-                    "party_size": size,
-                    # Straight from the API. The model must offer these and
-                    # nothing else.
-                    "alternatives": [
-                        {
-                            "date": alt["date"],
-                            "time": alt["time"],
-                            "spoken": spoken_time(alt["time"]),
-                        }
-                        for alt in payload.get("alternatives", [])
-                    ],
-                },
-            )
+            # Straight from the API. The model must offer these and nothing else.
+            alternatives = [
+                {"date": alt["date"], "time": alt["time"], "spoken": spoken_time(alt["time"])}
+                for alt in payload.get("alternatives", [])
+            ]
+            unavailable: dict[str, Any] = {
+                "status": "unavailable",
+                "date": iso_date,
+                "time": hhmm,
+                "party_size": size,
+                "alternatives": alternatives,
+            }
+            if not alternatives:
+                # Nothing on this date fits the party. Say so plainly. Without
+                # this the model reaches back for a service grid it saw earlier
+                # in the conversation and offers those times as though they were
+                # free -- exactly the invented availability we forbid.
+                unavailable["instruction"] = (
+                    f"No time on {spoken_date(iso_date)} can seat {size}. Say so, "
+                    "and offer to try another date or a smaller party. Do NOT "
+                    "suggest specific times: none are available."
+                )
+            return self._finish("check_availability", args, unavailable)
 
         if result.error_code == "INVALID_SLOT":
             return self._finish(
                 "check_availability",
                 args,
-                {
-                    "status": "not_a_bookable_slot",
-                    "say_to_caller": "We don't seat at that time.",
-                    **_slot_guidance(iso_date),
-                },
+                {"status": "not_a_bookable_slot", **_slot_guidance(iso_date)},
             )
 
         if result.transient:
@@ -217,6 +239,104 @@ class LumaAgent(Agent):
             "check_availability",
             args,
             {"status": "error", "error_code": result.error_code},
+        )
+
+    @function_tool
+    async def list_availability(
+        self,
+        ctx: RunContext,
+        date: str,
+        party_size: int,
+    ) -> dict[str, Any]:
+        """List every free time on a date. Use this when the caller asks what is
+        available rather than naming a specific time.
+
+        Args:
+            date: The date to look at, ideally as YYYY-MM-DD.
+            party_size: Number of guests.
+        """
+        args = {"date": date, "party_size": party_size}
+        self._log.log("tool_call", tool="list_availability", arguments=args)
+
+        try:
+            iso_date = normalize_date(date)
+            size = normalize_party_size(party_size)
+        except NormalizationError as exc:
+            return self._finish("list_availability", args, _invalid(exc.field, exc.hint))
+
+        self._state.requested_date = iso_date
+        self._state.party_size = size
+
+        if size > MAX_STANDARD_PARTY_SIZE:
+            return self._finish(
+                "list_availability",
+                args,
+                {"status": "needs_human_handoff", "reason": "party_size_exceeds_standard"},
+            )
+
+        # The API has no "slots for a day" endpoint, so the grid is probed. Done
+        # concurrently because six sequential round trips inside a live turn is
+        # a noticeable pause. Each answer is real API truth, not configuration.
+        results = await asyncio.gather(
+            *(self._api.check_availability(iso_date, slot, size) for slot in SERVICE_SLOTS)
+        )
+
+        if all(r.error_code == "INVALID_SLOT" for r in results):
+            return self._finish(
+                "list_availability",
+                args,
+                {"status": "not_a_bookable_slot", **_slot_guidance(iso_date)},
+            )
+        if any(r.transient for r in results):
+            return self._finish(
+                "list_availability",
+                args,
+                {
+                    "status": "temporarily_unavailable",
+                    "next_step": "call transfer_to_human",
+                    "say_to_caller": (
+                        "Our booking system isn't responding. Let me pass you to a colleague."
+                    ),
+                },
+            )
+
+        free = []
+        for slot, result in zip(SERVICE_SLOTS, results):
+            if result.ok and result.data.get("available"):
+                # Remember it, so a booking at one of these times passes the
+                # availability gate without a redundant second check.
+                self._state.remember_availability(iso_date, slot, size, result.data)
+                free.append({"time": slot, "spoken": spoken_time(slot)})
+
+        if not free:
+            return self._finish(
+                "list_availability",
+                args,
+                {
+                    "status": "nothing_available",
+                    "date": iso_date,
+                    "party_size": size,
+                    "instruction": (
+                        f"Nothing on {spoken_date(iso_date)} can seat {size}. Say so and "
+                        "offer another date. Do NOT suggest times."
+                    ),
+                },
+            )
+
+        return self._finish(
+            "list_availability",
+            args,
+            {
+                "status": "available_times",
+                "date": iso_date,
+                "spoken_date": spoken_date(iso_date),
+                "party_size": size,
+                "times": free,
+                "instruction": (
+                    "These are confirmed free. Read out at most three, most natural "
+                    "dinner times first, and let the caller pick."
+                ),
+            },
         )
 
     @function_tool

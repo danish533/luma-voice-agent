@@ -10,3 +10,4 @@ logs/
 
 # Vendored browser SDK (re-fetch with scripts/fetch_vendor.sh)
 ops/vendor/
+voice_samples/

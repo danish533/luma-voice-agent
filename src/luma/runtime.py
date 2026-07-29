@@ -12,12 +12,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from livekit.agents import AgentSession
-from livekit.agents.metrics import EOUMetrics, LLMMetrics, STTMetrics, TTSMetrics
 
 from .agent import LumaAgent
 from .api_client import ReservationApi
 from .config import Settings
-from .obs import JsonLogger, LatencyBook
+from .obs import JsonLogger, LatencyBook, TurnLatency
 from .state import CallState
 
 
@@ -145,51 +144,9 @@ def build_runtime(
 def _wire_observability(
     session: AgentSession, logger: JsonLogger, latency: LatencyBook, state: CallState
 ) -> None:
-    logged_turns: set[str] = set()
-    # LUMA_LOG_LEVEL=DEBUG dumps every metric with its speech id, which is how
-    # you diagnose a turn that never assembles into a latency figure.
-    debug_metrics = logger._level == "DEBUG"
-
-    @session.on("metrics_collected")
-    def _on_metrics(ev: Any) -> None:
-        m = ev.metrics
-        speech_id = getattr(m, "speech_id", None)
-        if debug_metrics:
-            logger.log(
-                "metric_raw",
-                kind=type(m).__name__,
-                speech_id=speech_id,
-                cancelled=getattr(m, "cancelled", None),
-            )
-        # Cancelled generations are barge-ins: real events worth counting, but
-        # they would poison a latency percentile with truncated numbers.
-        if isinstance(m, STTMetrics):
-            logger.log("stt_metrics", duration_ms=round(m.duration * 1000, 2))
-            return
-        if not speech_id:
-            return
-
-        turn = latency.turn(speech_id)
-        if isinstance(m, EOUMetrics):
-            turn.eou_delay_ms = round(m.end_of_utterance_delay * 1000, 2)
-        elif isinstance(m, LLMMetrics) and not m.cancelled:
-            # A tool-calling turn runs the LLM twice under one speech id; the
-            # first call is the one the caller is waiting on.
-            if turn.llm_ttft_ms is None:
-                turn.llm_ttft_ms = round(m.ttft * 1000, 2)
-        elif isinstance(m, TTSMetrics) and not m.cancelled:
-            if turn.tts_ttfb_ms is None:  # first audio chunk of the turn only
-                turn.tts_ttfb_ms = round(m.ttfb * 1000, 2)
-        else:
-            return
-
-        # Emit once the turn is whole, whatever order the parts arrived in.
-        # Turns that can never complete are skipped by construction: the fixed
-        # greeting has TTS but no EOU or LLM, and would otherwise log a record
-        # of mostly nulls and drag the percentiles toward nonsense.
-        if speech_id not in logged_turns and turn.end_of_speech_to_first_audio_ms is not None:
-            logged_turns.add(speech_id)
-            logger.log("turn_latency", **turn.as_dict())
+    def _ms(report: Any, key: str) -> float | None:
+        value = report.get(key)
+        return round(value * 1000, 2) if isinstance(value, (int, float)) else None
 
     @session.on("user_input_transcribed")
     def _on_transcript(ev: Any) -> None:
@@ -197,21 +154,45 @@ def _wire_observability(
             logger.log("user_transcript", text=ev.transcript)
             state.record_turn("caller", ev.transcript)
 
+    # `end_of_turn_delay` is reported on the *user* message; the LLM/TTS legs
+    # and the end-to-end figure on the *assistant* reply that follows it. They
+    # have to be stitched across the two.
+    pending_eou: dict[str, float | None] = {"ms": None}
+
     @session.on("conversation_item_added")
     def _on_item(ev: Any) -> None:
         item = ev.item
-        if getattr(item, "role", None) == "assistant":
-            text = item.text_content or ""
-            state.record_turn("agent", text)
-            # `interrupted` is set when the caller barged in mid-sentence, and
-            # `text` is what the caller actually heard before being cut off --
-            # not what the model intended to say.
-            logger.log(
-                "agent_turn",
-                interrupted=bool(getattr(item, "interrupted", False)),
-                chars=len(text),
-                text=text,
-            )
+        role = getattr(item, "role", None)
+
+        if role == "user":
+            pending_eou["ms"] = _ms(getattr(item, "metrics", None) or {}, "end_of_turn_delay")
+            return
+        if role != "assistant":
+            return
+
+        text = item.text_content or ""
+        interrupted = bool(getattr(item, "interrupted", False))
+        state.record_turn("agent", text)
+        # `interrupted` is set when the caller barged in mid-sentence, and
+        # `text` is what the caller actually heard before being cut off --
+        # not what the model intended to say.
+        logger.log("agent_turn", interrupted=interrupted, chars=len(text), text=text)
+
+        report = getattr(item, "metrics", None) or {}
+        turn = TurnLatency(
+            e2e_ms=_ms(report, "e2e_latency"),
+            eou_delay_ms=pending_eou["ms"],
+            llm_ttft_ms=_ms(report, "llm_node_ttft"),
+            tts_ttfb_ms=_ms(report, "tts_node_ttfb"),
+        )
+        pending_eou["ms"] = None
+        if turn.e2e_ms is None:
+            return  # the fixed greeting has no preceding user turn to measure
+        # A barge-in truncates the turn, so its timings would drag the
+        # percentiles toward numbers no caller experienced.
+        if not interrupted:
+            latency.record_turn(turn)
+        logger.log("turn_latency", interrupted=interrupted, **turn.as_dict())
 
     @session.on("agent_false_interruption")
     def _on_false_interruption(ev: Any) -> None:

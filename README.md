@@ -29,12 +29,12 @@ handing off to a human with the whole conversation intact.
 |---|---|
 | `src/luma/worker.py` | LiveKit entrypoint; VAD prewarm; call lifecycle |
 | `src/luma/runtime.py` | Builds the session (models, turn-taking, barge-in) and wires metrics. Shared by the worker **and** the eval suite, so tests exercise what ships |
-| `src/luma/agent.py` | The six tools and the guardrails that constrain them |
+| `src/luma/agent.py` | The seven tools and the guardrails that constrain them |
 | `src/luma/normalize.py` | Speech → API-valid values (E.164, ISO dates, 24-hour times) |
 | `src/luma/api_client.py` | HTTP, bounded retry, deterministic idempotency keys |
 | `src/luma/state.py` | Per-call state and the handoff summary |
 | `src/luma/obs.py` | JSON logging, PII redaction, latency book |
-| `tests/` | 70 tests. Guardrails and normalisation, **no LLM key needed** |
+| `tests/` | 75 tests. Guardrails and normalisation, **no LLM key needed** |
 | `eval/run_evals.py` | The seven standard scenarios, scored against API ground truth |
 
 Full reasoning, the twelve architecture answers, and a cost model are in
@@ -158,8 +158,13 @@ can act on. An exception in a voice agent is dead air; a
 `{"status": "slot_unavailable", "alternatives": [...]}` is something to say.
 
 **Alternatives come from the API or not at all.** When a slot is full the tool
-passes through exactly what the API returned. There is no code path that invents
-a time.
+passes through exactly what the API returned, and when the API returns none it
+says so explicitly — otherwise the model reaches back for a list of *seating
+times* it saw earlier and offers them as though they were free.
+
+**"What have you got?" is a first-class question.** `list_availability` probes
+the whole evening concurrently and returns only genuinely open times, so the
+agent never gropes through the grid one slot at a time.
 
 ### The traps in the supplied API, and how each is handled
 
@@ -188,8 +193,8 @@ narrates a perfect booking it never made fails here.
 | Check-level pass rate | **33 / 33** |
 | Tool-call accuracy | **17 / 17** |
 | Duplicate or wrong writes | **0** |
-| Deterministic guardrail suite | **70 / 70** |
-| End-of-speech to first audio | **2.3 s** median, measured on a real call |
+| Deterministic guardrail suite | **75 / 75** |
+| End-of-speech to first audio | **~3.5 s** on a tool-calling turn, measured on a real call |
 | Reservation API latency | p50 **8.9 ms**, p95 **12.3 ms** |
 
 Measured on `gemini-3.1-flash-lite` — chosen on latency, not preference. The

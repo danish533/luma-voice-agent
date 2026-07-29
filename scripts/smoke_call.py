@@ -91,6 +91,7 @@ async def run(args: argparse.Namespace) -> int:
         greeting_heard = asyncio.Event()
         reply_heard = asyncio.Event()
         listening = {"on": False}
+        last_audio = {"at": 0.0}
 
         @room.on("participant_connected")
         def _on_join(p: rtc.RemoteParticipant) -> None:
@@ -108,6 +109,7 @@ async def run(args: argparse.Namespace) -> int:
             loud = 0
             async for ev in stream:
                 if any(abs(s) > 500 for s in ev.frame.data[:400]):
+                    last_audio["at"] = time.perf_counter()
                     loud += 1
                     if loud >= 3:
                         if not greeting_heard.is_set():
@@ -147,8 +149,15 @@ async def run(args: argparse.Namespace) -> int:
                 print("\nPASS  greeting only (--greeting-only)")
                 return 0
 
-            # Let the greeting play out, or we would be barging in on it.
-            await asyncio.sleep(args.settle)
+            # Wait for the greeting to actually finish rather than guessing a
+            # fixed delay: speaking over it turns this into a barge-in test and
+            # makes the reply timing meaningless.
+            quiet_since = time.perf_counter()
+            while time.perf_counter() - quiet_since < args.settle:
+                if last_audio["at"] > quiet_since:
+                    quiet_since = last_audio["at"]
+                await asyncio.sleep(0.1)
+            print("  greeting finished")
 
             hum.cancel()
             print("  speaking the caller's line…")
@@ -195,6 +204,17 @@ async def run(args: argparse.Namespace) -> int:
     for tool, status in results:
         print(f"  tool: {tool} -> {status}")
 
+    # The framework's own e2e figure, not our wall-clock guess: it knows when
+    # the caller actually stopped speaking, and it credits the work that
+    # preemptive generation already did before that moment.
+    for r in rows:
+        if r["event"] == "turn_latency" and r.get("end_of_speech_to_first_audio_ms"):
+            print(
+                f"  latency: {r['end_of_speech_to_first_audio_ms']:.0f} ms end-of-speech "
+                f"to first audio  (eou {r['eou_delay_ms']} · llm {r['llm_ttft_ms']} "
+                f"· tts {r['tts_ttfb_ms']})"
+            )
+
     ok = bool(heard) and "check_availability" in tools
     print(f"\n{'PASS' if ok else 'FAIL'}  "
           f"transcribed={bool(heard)}  called_check_availability={'check_availability' in tools}")
@@ -204,8 +224,8 @@ async def run(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--timeout", type=float, default=45.0)
-    parser.add_argument("--settle", type=float, default=4.0,
-                        help="seconds to let the greeting finish before speaking")
+    parser.add_argument("--settle", type=float, default=2.0,
+                        help="seconds of silence that mean the greeting has finished")
     parser.add_argument("--linger", type=float, default=10.0,
                         help="seconds to stay connected after the reply starts")
     parser.add_argument("--greeting-only", action="store_true")

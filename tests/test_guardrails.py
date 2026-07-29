@@ -51,13 +51,29 @@ async def test_time_outside_the_service_grid_is_not_invented(agent: LumaAgent) -
     """The README advertises 17:00 but the API rejects it. We must not pretend."""
     result = await agent.check_availability(None, "2026-08-14", "17:00", 2)
     assert result["status"] == "not_a_bookable_slot"
-    assert "5:30 PM" in result["seating_times"]
+    assert result["reason"] == "time_not_a_seating"
+    assert "5:30 PM" in result["times_we_seat"]
 
 
-async def test_unknown_date_suggests_bookable_dates(agent: LumaAgent) -> None:
-    result = await agent.check_availability(None, "2026-09-01", "19:00", 2)
+async def test_unknown_date_blames_the_date_not_the_time(agent: LumaAgent) -> None:
+    """A bookable time on an unbookable date must not produce "we don't seat at
+    six" -- the caller then hears six offered back as an alternative."""
+    result = await agent.check_availability(None, "2026-09-01", "18:00", 2)
     assert result["status"] == "not_a_bookable_slot"
+    assert result["reason"] == "date_not_bookable"
     assert result["bookable_dates"]
+    assert "times_we_seat" not in result, "must not list times for an impossible date"
+
+
+async def test_no_alternatives_tells_the_model_not_to_suggest_times(agent: LumaAgent) -> None:
+    """2026-08-16 caps every slot at 4, so a party of 6 has no options at all.
+    Without an explicit instruction the model recites the service grid as
+    though those times were free."""
+    await agent.check_availability(None, "2026-08-16", "19:00", 6)  # burns the seeded 503
+    result = await agent.check_availability(None, "2026-08-16", "19:00", 6)
+    assert result["status"] == "unavailable"
+    assert result["alternatives"] == []
+    assert "Do NOT suggest specific times" in result["instruction"]
 
 
 async def test_transient_failure_is_retried_exactly_once_and_succeeds(agent: LumaAgent) -> None:
@@ -68,6 +84,40 @@ async def test_transient_failure_is_retried_exactly_once_and_succeeds(agent: Lum
     calls = [c for c in agent._api._latency.api_calls if c["path"] == "/availability"]
     assert [c["status"] for c in calls] == [503, 200]
     assert calls[-1]["attempts"] == 2, "exactly one retry, not a retry storm"
+
+
+async def test_list_availability_returns_only_genuinely_free_times(agent: LumaAgent) -> None:
+    """"What have you got?" is the commonest opening line, and answering it one
+    slot at a time is unusable. 2026-08-14 seats 8/4/0/2/8/6."""
+    result = await agent.list_availability(None, "2026-08-14", 4)
+    assert result["status"] == "available_times"
+    assert [t["time"] for t in result["times"]] == ["17:30", "18:00", "19:30", "20:00"]
+    assert "18:30" not in [t["time"] for t in result["times"]], "0 seats"
+    assert "19:00" not in [t["time"] for t in result["times"]], "only 2 seats"
+
+
+async def test_list_availability_primes_the_write_gate(agent: LumaAgent) -> None:
+    """Times it confirmed are usable for booking without a redundant re-check."""
+    await agent.list_availability(None, "2026-08-14", 4)
+    result = await agent.create_reservation(
+        None, **BOOKED, date="2026-08-14", time="19:30", party_size=4, caller_confirmed=True
+    )
+    assert result["status"] == "created"
+
+
+async def test_list_availability_says_so_when_nothing_fits(agent: LumaAgent) -> None:
+    """Every slot on 2026-08-16 caps at 4, so a party of 5 fits nowhere. This
+    also exercises the seeded 503: one of the six concurrent probes hits it and
+    must recover on its single retry rather than poisoning the whole listing."""
+    result = await agent.list_availability(None, "2026-08-16", 5)
+    assert result["status"] == "nothing_available"
+    assert "Do NOT suggest times" in result["instruction"]
+
+
+async def test_list_availability_on_an_unbookable_date(agent: LumaAgent) -> None:
+    result = await agent.list_availability(None, "2026-09-01", 2)
+    assert result["status"] == "not_a_bookable_slot"
+    assert result["reason"] == "date_not_bookable"
 
 
 # --------------------------------------------------------- write guardrails

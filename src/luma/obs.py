@@ -91,32 +91,31 @@ def timed() -> Iterator[dict[str, float]]:
 
 @dataclass
 class TurnLatency:
-    """One conversational turn, assembled from LiveKit's per-component metrics.
+    """One conversational turn, as LiveKit reports it on the assistant message.
 
-    LiveKit emits EOU/LLM/TTS metrics separately but tags them with a shared
-    `speech_id`, so they can be joined into the single number that actually
-    matters to a caller: silence -> first audio.
+    The headline figure is `e2e_ms` -- measured wall-clock from the caller
+    falling silent to the agent beginning to respond. It is taken from the
+    framework rather than computed here, because summing the component legs
+    overcounts badly: with preemptive generation the LLM starts *while the
+    caller is still speaking*, so the legs overlap instead of running in series.
+    An earlier version of this file added them up and reported ~2.7 s for turns
+    the caller actually experienced as near-instant.
+
+    The components are kept alongside for diagnosis -- they answer "which leg
+    should I optimise", which the single number cannot.
     """
 
-    speech_id: str
+    e2e_ms: float | None = None
     eou_delay_ms: float | None = None
     llm_ttft_ms: float | None = None
     tts_ttfb_ms: float | None = None
 
-    @property
-    def end_of_speech_to_first_audio_ms(self) -> float | None:
-        parts = [self.eou_delay_ms, self.llm_ttft_ms, self.tts_ttfb_ms]
-        if any(p is None for p in parts):
-            return None
-        return round(sum(p for p in parts if p is not None), 2)
-
     def as_dict(self) -> dict[str, Any]:
         return {
-            "speech_id": self.speech_id,
+            "end_of_speech_to_first_audio_ms": self.e2e_ms,
             "eou_delay_ms": self.eou_delay_ms,
             "llm_ttft_ms": self.llm_ttft_ms,
             "tts_ttfb_ms": self.tts_ttfb_ms,
-            "end_of_speech_to_first_audio_ms": self.end_of_speech_to_first_audio_ms,
         }
 
 
@@ -124,11 +123,11 @@ class TurnLatency:
 class LatencyBook:
     """Collects turn latencies and API latencies for the evaluation report."""
 
-    turns: dict[str, TurnLatency] = field(default_factory=dict)
+    turns: list[TurnLatency] = field(default_factory=list)
     api_calls: list[dict[str, Any]] = field(default_factory=list)
 
-    def turn(self, speech_id: str) -> TurnLatency:
-        return self.turns.setdefault(speech_id, TurnLatency(speech_id=speech_id))
+    def record_turn(self, turn: TurnLatency) -> None:
+        self.turns.append(turn)
 
     def record_api(self, *, method: str, path: str, status: int, ms: float, attempts: int) -> None:
         self.api_calls.append(
@@ -146,11 +145,7 @@ class LatencyBook:
         return round(ordered[idx], 2)
 
     def summary(self) -> dict[str, Any]:
-        voice = [
-            t.end_of_speech_to_first_audio_ms
-            for t in self.turns.values()
-            if t.end_of_speech_to_first_audio_ms is not None
-        ]
+        voice = [t.e2e_ms for t in self.turns if t.e2e_ms is not None]
         api = [c["ms"] for c in self.api_calls]
         return {
             "voice_turns": len(voice),
