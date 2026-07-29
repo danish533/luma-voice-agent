@@ -110,21 +110,43 @@ def build_runtime(
             llm=build_llm(settings),
             tts=deepgram.TTS(model=settings.tts_model),
             vad=vad,
-            # A transformer that decides whether the caller has actually
-            # finished, rather than trusting a fixed silence timeout. This is
-            # what stops the agent talking over someone who paused to think.
-            turn_detection=build_turn_detector(settings),
-            min_endpointing_delay=0.4,
-            max_endpointing_delay=4.0,
-            allow_interruptions=True,
-            # Two guards against a cough or a "mhm" cutting the agent off:
-            # speech must last long enough and carry enough words.
-            min_interruption_duration=0.4,
-            min_interruption_words=2,
-            # If the interruption turns out to have been noise, resume.
-            false_interruption_timeout=2.0,
-            resume_false_interruption=True,
-            preemptive_generation=True,
+            # One declarative block rather than the deprecated per-kwarg form.
+            # That matters beyond tidiness: when a turn_handling dict is passed,
+            # the loose kwargs are ignored, so mixing the two silently drops
+            # whatever you set.
+            turn_handling={
+                # A transformer that decides whether the caller has actually
+                # finished, rather than trusting a fixed silence timeout. This
+                # is what stops the agent talking over someone mid-thought.
+                "turn_detection": build_turn_detector(settings),
+                "endpointing": {
+                    "mode": "fixed",
+                    "min_delay": 0.35,
+                    # The single biggest latency win available. The default
+                    # 4.0s ceiling applies whenever the detector is unsure --
+                    # and on a hesitant caller ("yeah... I would like...") it is
+                    # unsure often, so four seconds of silence lands mid-booking
+                    # and reads as a dead line. 1.2s still protects a genuine
+                    # pause without stranding anyone.
+                    "max_delay": 1.2,
+                },
+                "interruption": {
+                    "enabled": True,
+                    # Two guards against a cough or an "mhm" cutting the agent
+                    # off: speech must last long enough and carry enough words.
+                    "min_duration": 0.5,
+                    "min_words": 2,
+                    "discard_audio_if_uninterruptible": True,
+                    # If the interruption turns out to have been noise, resume
+                    # rather than leaving the reply half-spoken.
+                    "resume_false_interruption": True,
+                    "false_interruption_timeout": 2.0,
+                },
+                # Safe here because the prompt and tool set are fixed for the
+                # whole call: a draft started early is never invalidated. An
+                # agent that rebuilt either per turn would have to disable this.
+                "preemptive_generation": {"enabled": True},
+            },
         )
     else:
         session = AgentSession(llm=build_llm(settings))

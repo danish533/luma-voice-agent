@@ -61,8 +61,32 @@ def _log_dir() -> Path:
 
 
 def newest_session() -> Path | None:
-    logs = sorted(_log_dir().glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    logs = recent_sessions(1)
     return logs[0] if logs else None
+
+
+def recent_sessions(limit: int = 8) -> list[Path]:
+    """Newest sessions first.
+
+    Reservations are gathered across several calls, not just the current one:
+    a caller frequently books on one call and reschedules on the next, and the
+    later log holds only a `reservation_modified`. Reading the newest file
+    alone made an existing booking vanish from the console the moment a second
+    call started -- which looked exactly like the agent had lost it.
+    """
+    logs = sorted(_log_dir().glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return logs[:limit]
+
+
+def load_rows(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(errors="ignore").splitlines():
+        if line.strip().startswith("{"):
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return rows
 
 
 async def availability_grid(client: httpx.AsyncClient) -> dict[str, dict[str, int]]:
@@ -177,12 +201,13 @@ def read_reservations(rows: list[dict]) -> list[dict[str, Any]]:
         entry = by_id.setdefault(rid, {"reservation_id": rid, "history": []})
         entry["ts"] = record.get("ts")
         entry["history"].append(event.replace("reservation_", ""))
+        # A code seen on any of the three events identifies the reservation;
+        # a reschedule on a later call carries one but no "created".
+        if record.get("confirmation_code"):
+            entry["confirmation_code"] = record["confirmation_code"]
         if event == "reservation_created":
-            entry.update(
-                confirmation_code=record.get("confirmation_code"),
-                idempotency_key=record.get("idempotency_key"),
-                status="confirmed",
-            )
+            entry["idempotency_key"] = record.get("idempotency_key")
+            entry["status"] = "confirmed"
         elif event == "reservation_modified":
             entry["status"] = "confirmed"
             entry["patch"] = record.get("patch")
@@ -222,6 +247,7 @@ def read_session(path: Path) -> tuple[list[dict], dict[str, Any]]:
         "handoffs": 0, "interruptions": 0, "tool_calls": 0,
     }
     latencies: list[float] = []
+    legs: dict[str, list[float]] = {}
 
     for line in path.read_text(errors="ignore").splitlines():
         try:
@@ -245,6 +271,10 @@ def read_session(path: Path) -> tuple[list[dict], dict[str, Any]]:
         elif event == "turn_latency":
             if (total := record.get("end_of_speech_to_first_audio_ms")) is not None:
                 latencies.append(total)
+            for leg, key in (("eou", "eou_delay_ms"), ("ttft", "llm_ttft_ms"),
+                             ("ttfb", "tts_ttfb_ms")):
+                if isinstance(record.get(key), (int, float)):
+                    legs.setdefault(leg, []).append(record[key])
 
         if row := classify(record):
             rows.append(row)
@@ -252,6 +282,10 @@ def read_session(path: Path) -> tuple[list[dict], dict[str, Any]]:
     stats["turn_p50"] = _pct(latencies, 50)
     stats["turn_p95"] = _pct(latencies, 95)
     stats["turns"] = len(latencies)
+    # Per-leg medians: the single number says how bad it is, these say which
+    # part to go and fix.
+    for leg, values in legs.items():
+        stats[f"{leg}_p50"] = _pct(values, 50)
     return rows[-MAX_EVENTS:], stats
 
 
@@ -272,20 +306,25 @@ async def state() -> dict[str, Any]:
             health = False
         grid = await availability_grid(client) if health else {}
 
-    session = newest_session()
+    sessions = recent_sessions()
+    session = sessions[0] if sessions else None
+    # The feed and the per-call KPIs stay scoped to the current call; only the
+    # reservation list spans several, because a booking outlives the call that
+    # made it.
     events, stats = read_session(session) if session else ([], {})
 
     reservations: list[dict[str, Any]] = []
-    if session:
-        raw = [
-            json.loads(line)
-            for line in session.read_text(errors="ignore").splitlines()
-            if line.strip().startswith("{")
-        ]
-        reservations = read_reservations(raw)
+    if sessions:
+        merged: list[dict[str, Any]] = []
+        for path in reversed(sessions):  # oldest first, so later calls win
+            merged.extend(load_rows(path))
+        reservations = read_reservations(merged)
         if reservations and health:
             async with httpx.AsyncClient(base_url=settings.api_base_url, timeout=3.0) as c:
                 await enrich(reservations, c)
+        # A record the API no longer recognises is a stale log line, not a
+        # booking; showing a blank card is worse than showing nothing.
+        reservations = [r for r in reservations if r.get("name")]
 
     return {
         "api_online": health,

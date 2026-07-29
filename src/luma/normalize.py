@@ -250,3 +250,36 @@ def spoken_date(iso: str) -> str:
     """Render ``2026-08-14`` as ``Friday, August 14``."""
     parsed = _date.fromisoformat(iso)
     return parsed.strftime("%A, %B %-d")
+
+
+# NATO alphabet, because "C as in Charlie" survives a phone line and a lone
+# spoken "C" does not -- B, C, D, E, G, P, T, V and Z are near-identical over
+# narrowband audio.
+_NATO = {
+    "A": "Alpha", "B": "Bravo", "C": "Charlie", "D": "Delta", "E": "Echo",
+    "F": "Foxtrot", "G": "Golf", "H": "Hotel", "I": "India", "J": "Juliet",
+    "K": "Kilo", "L": "Lima", "M": "Mike", "N": "November", "O": "Oscar",
+    "P": "Papa", "Q": "Quebec", "R": "Romeo", "S": "Sierra", "T": "Tango",
+    "U": "Uniform", "V": "Victor", "W": "Whiskey", "X": "X-ray", "Y": "Yankee",
+    "Z": "Zulu",
+}
+
+
+def spoken_code(code: str) -> str:
+    """Render ``LUMA-CDCF`` as something a caller can actually write down.
+
+    Read as a word, "LUMA-CDCF" comes out of TTS as an unintelligible mumble --
+    callers ask for it two or three times and still get it wrong. Every
+    reservation code ends up being spelled out, so spell it out here rather than
+    hoping the model decides to.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", str(code or "")).upper()
+    if not cleaned:
+        return ""
+    prefix, suffix = cleaned[:4], cleaned[4:]
+    parts = [prefix.capitalize()] if prefix == "LUMA" else [
+        ", ".join(_NATO.get(c, c) for c in prefix)
+    ]
+    if suffix:
+        parts.append(", ".join(_NATO.get(c, c) if c.isalpha() else c for c in suffix))
+    return " — ".join(parts)

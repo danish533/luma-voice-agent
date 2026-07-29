@@ -32,6 +32,7 @@ from .normalize import (
     normalize_phone,
     normalize_time,
     phone_variants,
+    spoken_code,
     spoken_date,
     spoken_time,
 )
@@ -515,6 +516,13 @@ class LumaAgent(Agent):
 
         if result.ok:
             record = result.data
+            # Keep the collected details in step with what was actually booked.
+            # They were last set by check_availability, which may have been for
+            # a time the caller then moved away from -- and this state is what
+            # the handoff summary shows a colleague.
+            self._state.requested_date = iso_date
+            self._state.requested_time = hhmm
+            self._state.party_size = size
             self._state.created_reservations.append(record)
             self._state.known_reservation_ids.add(record["reservation_id"])
             self._log.log(
@@ -727,7 +735,16 @@ class LumaAgent(Agent):
         if result.ok:
             record = result.data
             self._state.remember_reservations([record])
-            self._log.log("reservation_modified", reservation_id=reservation_id, patch=patch)
+            # Carry the code and the resulting details, not just the id: a
+            # reschedule often happens on a later call than the booking, and a
+            # consumer reading only this log line has no other way to identify
+            # the reservation.
+            self._log.log(
+                "reservation_modified",
+                reservation_id=reservation_id,
+                confirmation_code=record.get("confirmation_code"),
+                patch=patch,
+            )
             return self._finish(
                 "modify_reservation",
                 args,
@@ -813,7 +830,11 @@ class LumaAgent(Agent):
         async with _filler(ctx):
             result = await self._api.cancel_reservation(reservation_id)
         if result.ok:
-            self._log.log("reservation_cancelled", reservation_id=reservation_id)
+            self._log.log(
+                "reservation_cancelled",
+                reservation_id=reservation_id,
+                confirmation_code=result.data.get("confirmation_code"),
+            )
             return self._finish(
                 "cancel_reservation",
                 args,
@@ -840,9 +861,12 @@ class LumaAgent(Agent):
 
 def _public(record: dict[str, Any]) -> dict[str, Any]:
     """Trim an API record to what the model needs to speak about it."""
+    code = record.get("confirmation_code")
     return {
         "reservation_id": record.get("reservation_id"),
-        "confirmation_code": record.get("confirmation_code"),
+        "confirmation_code": code,
+        # Read this out, not the raw code: TTS turns "LUMA-CDCF" into mush.
+        "say_the_code_like_this": spoken_code(code) if code else None,
         "name": record.get("name"),
         "date": record.get("date"),
         "time": record.get("time"),

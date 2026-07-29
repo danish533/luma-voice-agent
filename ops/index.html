@@ -280,7 +280,11 @@ async function tick() {
     + kpi(s.retries ?? 0, "Recovered retries")
     + kpi(s.interruptions ?? 0, "Barge-ins")
     + kpi(s.turn_p50 != null ? s.turn_p50 + " ms" : "—", "Turn latency p50",
-          s.turn_p95 != null ? `p95 ${s.turn_p95} ms · ${s.turns} turns` : "awaiting a voice turn");
+          s.turn_p50 != null
+            ? `eou ${s.eou_p50 ?? "–"} · ttft ${s.ttft_p50 ?? "–"} · ttfb ${s.ttfb_p50 ?? "–"} ms`
+            : "awaiting a voice turn")
+    + kpi(s.turn_p95 != null ? s.turn_p95 + " ms" : "—", "Turn latency p95",
+          s.turns ? `${s.turns} turns measured` : "");
 
   let html = "<table><tr><th></th>" + d.slots.map(t => `<th>${t}</th>`).join("") + "</tr>";
   for (const date of d.dates) {
