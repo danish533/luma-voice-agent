@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import httpx
 import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
@@ -21,6 +22,27 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 API_URL = os.getenv("RESERVATION_API_URL", "http://127.0.0.1:8000")
 
 
+def pytest_collection_modifyitems(session, config, items) -> None:
+    """Stop once, with one clear line, if the mock API is not up.
+
+    Every guardrail test needs it. Letting them fail individually produces
+    twenty-five identical tracebacks for a single cause, which buries any real
+    failure sitting among them.
+    """
+    if not any("test_guardrails" in item.nodeid for item in items):
+        return
+    try:
+        httpx.get(f"{API_URL}/health", timeout=2.0).raise_for_status()
+    except Exception:
+        pytest.exit(
+            f"\nThe mock reservation API is not running at {API_URL}.\n"
+            f"Start it with `make api`, then re-run.\n"
+            f"(Refusing to skip: a silent skip here would hide every write "
+            f"guardrail these tests exist to protect.)\n",
+            returncode=1,
+        )
+
+
 @pytest.fixture
 def settings() -> Settings:
     os.environ.setdefault("RESERVATION_API_URL", API_URL)
@@ -36,11 +58,7 @@ async def agent(settings: Settings):
     reset = await api.reset()
     if not reset.ok:
         await api.aclose()
-        pytest.fail(
-            f"mock API not reachable at {settings.api_base_url} — run `make api`. "
-            "Failing rather than skipping: a silent skip here hides every "
-            "guardrail these tests exist to protect."
-        )
+        pytest.fail(f"mock API unreachable at {settings.api_base_url}")
 
     state = CallState(session_id="test")
     yield LumaAgent(api=api, state=state, logger=logger)
