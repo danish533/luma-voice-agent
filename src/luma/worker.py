@@ -24,7 +24,7 @@ from livekit.plugins import silero
 from livekit.plugins.turn_detector import english as _turn_detector_en  # noqa: F401
 
 from .config import Settings
-from .prompts import GREETING
+from .prompts import greeting
 from .runtime import build_runtime
 
 load_dotenv()
@@ -91,7 +91,7 @@ async def entrypoint(ctx: JobContext) -> None:
     await runtime.session.start(agent=runtime.agent, room=ctx.room)
     # A fixed greeting rather than a generated one: it is the one turn where
     # latency is fully avoidable, and it never needs to vary.
-    await runtime.session.say(GREETING, allow_interruptions=True)
+    await runtime.session.say(greeting(), allow_interruptions=True)
 
 
 def main() -> None:

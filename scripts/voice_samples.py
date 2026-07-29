@@ -22,7 +22,7 @@ from dotenv import load_dotenv  # noqa: E402
 from livekit.agents.utils import http_context  # noqa: E402
 from livekit.plugins import deepgram  # noqa: E402
 
-from luma.prompts import GREETING  # noqa: E402
+from luma.prompts import greeting  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
@@ -45,7 +45,7 @@ async def render(model: str) -> str:
     frames = []
     rate = 24000
     try:
-        stream = tts.synthesize(GREETING)
+        stream = tts.synthesize(greeting())
         async for ev in stream:
             frames.append(bytes(ev.frame.data))
             rate = ev.frame.sample_rate
@@ -67,7 +67,7 @@ async def render(model: str) -> str:
 
 async def main() -> None:
     OUT.mkdir(exist_ok=True)
-    print(f'Rendering: "{GREETING}"\n')
+    print(f'Rendering: "{greeting()}"\n')
     async with http_context.open():
         for model in CANDIDATES:
             print(await render(model), flush=True)

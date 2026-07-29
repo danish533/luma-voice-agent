@@ -95,6 +95,10 @@ and polling would consume that failure before you could demonstrate it. Append
 Prefer no browser at all? `make console` runs the identical agent against your
 terminal's microphone — no transport, no frontend, no signup.
 
+**Changing the voice?** Set `DEEPGRAM_TTS_MODEL` in `.env` (audition candidates
+with `python scripts/voice_samples.py`) and set `AGENT_NAME` to match it — a
+masculine voice introducing itself as "Ava" is the first thing a caller notices.
+
 **Port 8000 taken?** `make api API_PORT=8010` and set `RESERVATION_API_URL`
 to match.
 

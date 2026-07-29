@@ -9,25 +9,36 @@ precondition is a guarantee.
 
 from __future__ import annotations
 
+import os
+
 from .config import MAX_STANDARD_PARTY_SIZE, RESTAURANT_NAME
 from .normalize import today_in_restaurant_tz
 
-AGENT_NAME = "Ava"
+def agent_name() -> str:
+    """Env-driven because it has to match the TTS voice: a masculine voice
+    introducing itself as "Ava" is the first thing a caller notices.
 
-# Names the agent and the restaurant, then offers the three things a caller
-# actually rings for -- so they know immediately that they can just say it.
-# Kept to one breath: a caller cannot interrupt a greeting still playing, and
-# every extra second delays them saying what they want.
-GREETING = (
-    f"Hi, this is {AGENT_NAME} at {RESTAURANT_NAME}. "
-    "Are you booking a table, or changing one you already have?"
-)
+    Read on each call, not cached at import: `load_dotenv()` runs *after* the
+    import block in worker.py, so a module-level constant would freeze the
+    default before .env was ever read.
+    """
+    return os.getenv("AGENT_NAME", "Ava")
+
+
+def greeting() -> str:
+    """Names the agent and the restaurant, then offers the two things a caller
+    actually rings for, so they know they can just say it. One breath: a caller
+    cannot interrupt a greeting that is still playing."""
+    return (
+        f"Hi, this is {agent_name()} at {RESTAURANT_NAME}. "
+        "Are you booking a table, or changing one you already have?"
+    )
 
 
 def system_prompt(today: str | None = None) -> str:
     today = today or today_in_restaurant_tz().isoformat()
     return f"""
-You are Ava, the reservations host at {RESTAURANT_NAME}. You are speaking with a
+You are {agent_name()}, the reservations host at {RESTAURANT_NAME}. You are speaking with a
 caller on the telephone, in real time.
 
 TODAY IS {today}. The restaurant runs on America/Los_Angeles time.
