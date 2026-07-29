@@ -73,7 +73,18 @@ prefer it.)
   press it, allow the microphone, and talk. No playground, no second tab;
 - **remaining seats per slot**, so a booking is visibly subtracted;
 - a **live event stream** — the conversation itself, plus reservations written,
-  duplicates blocked, retries recovered, barge-ins, and per-turn latency.
+  duplicates blocked, retries recovered, barge-ins, and per-turn latency;
+- **reservation cards** — click one to see who booked, when, party size, notes,
+  status history and the idempotency key that made it safe to retry;
+- a **calendar feed** at `/calendar.ics`. Subscribe from Google Calendar
+  (*Other calendars → From URL*), Outlook or Apple. iCalendar rather than a
+  Google OAuth integration on purpose: every calendar already speaks it, there
+  are no tokens to store or leak, and because nothing writes through it a
+  calendar outage can never affect a booking.
+
+The browser plays a **ringback tone** while the agent is being dispatched —
+several seconds of silence reads as "broken", and a ringing cadence reads as
+"hold on". It stops the instant the agent's audio arrives.
 
 The page holds only a short-lived JWT scoped to one room; the LiveKit API secret
 never leaves the server. Each call gets a fresh room, so its logs and metrics

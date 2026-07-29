@@ -18,7 +18,7 @@ import os
 import sys
 import time
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -28,11 +28,18 @@ import httpx  # noqa: E402
 import uvicorn  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 from fastapi import FastAPI, HTTPException  # noqa: E402
-from fastapi.responses import HTMLResponse  # noqa: E402
+from fastapi.responses import HTMLResponse, Response  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from livekit import api as lk_api  # noqa: E402
 
-from luma.config import SERVICE_SLOTS, Settings  # noqa: E402
+from luma.config import (  # noqa: E402
+    RESTAURANT_NAME,
+    RESTAURANT_TZ,
+    SERVICE_SLOTS,
+    SLOT_MINUTES,
+    Settings,
+)
+from luma.obs import redact_phone  # noqa: E402
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -152,6 +159,62 @@ def _row(ts: float | None, level: str, label: str, detail: str) -> dict[str, Any
     return {"ts": ts, "level": level, "label": label, "detail": detail}
 
 
+def read_reservations(rows: list[dict]) -> list[dict[str, Any]]:
+    """Reservations this call touched, newest first.
+
+    Reconstructed from the agent's log rather than the API, because the supplied
+    API has no endpoint that lists reservations -- search needs a phone number
+    or a code you must already know.
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+    for record in rows:
+        event = record.get("event")
+        if event not in {"reservation_created", "reservation_modified", "reservation_cancelled"}:
+            continue
+        rid = record.get("reservation_id")
+        if not rid:
+            continue
+        entry = by_id.setdefault(rid, {"reservation_id": rid, "history": []})
+        entry["ts"] = record.get("ts")
+        entry["history"].append(event.replace("reservation_", ""))
+        if event == "reservation_created":
+            entry.update(
+                confirmation_code=record.get("confirmation_code"),
+                idempotency_key=record.get("idempotency_key"),
+                status="confirmed",
+            )
+        elif event == "reservation_modified":
+            entry["status"] = "confirmed"
+            entry["patch"] = record.get("patch")
+        else:
+            entry["status"] = "cancelled"
+    return sorted(by_id.values(), key=lambda e: e.get("ts") or 0, reverse=True)
+
+
+async def enrich(reservations: list[dict[str, Any]], client: httpx.AsyncClient) -> None:
+    """Fill in name, date, time and party size from the API, in place."""
+    for entry in reservations:
+        code = entry.get("confirmation_code")
+        if not code:
+            continue
+        try:
+            r = await client.get("/reservations/search", params={"confirmation_code": code})
+            results = r.json().get("results", []) if r.is_success else []
+        except httpx.HTTPError:
+            continue
+        if results:
+            record = results[0]
+            entry.update(
+                name=record.get("name"),
+                date=record.get("date"),
+                time=record.get("time"),
+                party_size=record.get("party_size"),
+                notes=record.get("notes"),
+                status=record.get("status"),
+                phone=redact_phone(record.get("phone")),
+            )
+
+
 def read_session(path: Path) -> tuple[list[dict], dict[str, Any]]:
     rows: list[dict] = []
     stats = {
@@ -211,6 +274,19 @@ async def state() -> dict[str, Any]:
 
     session = newest_session()
     events, stats = read_session(session) if session else ([], {})
+
+    reservations: list[dict[str, Any]] = []
+    if session:
+        raw = [
+            json.loads(line)
+            for line in session.read_text(errors="ignore").splitlines()
+            if line.strip().startswith("{")
+        ]
+        reservations = read_reservations(raw)
+        if reservations and health:
+            async with httpx.AsyncClient(base_url=settings.api_base_url, timeout=3.0) as c:
+                await enrich(reservations, c)
+
     return {
         "api_online": health,
         "api_url": settings.api_base_url,
@@ -220,7 +296,80 @@ async def state() -> dict[str, Any]:
         "grid": grid,
         "events": events,
         "stats": stats,
+        "reservations": reservations,
     }
+
+
+def _ics_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace(";", r"\;").replace(",", r"\,")
+
+
+@app.get("/calendar.ics")
+async def calendar() -> Response:
+    """A subscribable iCalendar feed of the reservations booked on this call.
+
+    Chosen over a Google Calendar OAuth integration deliberately: iCalendar is
+    the one format every calendar already speaks, it needs no tokens to store,
+    refresh or leak, and a calendar outage can never affect a booking because
+    nothing writes through it. In Google Calendar: Other calendars -> From URL.
+
+    Reservations are read from the agent's log, since the supplied API cannot
+    list them (see read_reservations).
+    """
+    session = newest_session()
+    rows = (
+        [
+            json.loads(line)
+            for line in session.read_text(errors="ignore").splitlines()
+            if line.strip().startswith("{")
+        ]
+        if session
+        else []
+    )
+    reservations = read_reservations(rows)
+    async with httpx.AsyncClient(base_url=settings.api_base_url, timeout=3.0) as client:
+        await enrich(reservations, client)
+
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Luma Bistro//Reservations//EN",
+        "CALSCALE:GREGORIAN",
+        "X-WR-CALNAME:Luma Bistro reservations",
+        f"X-WR-TIMEZONE:{RESTAURANT_TZ.key}",
+    ]
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    for r in reservations:
+        if not (r.get("date") and r.get("time")):
+            continue
+        start = datetime.strptime(f"{r['date']} {r['time']}", "%Y-%m-%d %H:%M")
+        end = start + timedelta(minutes=SLOT_MINUTES)
+        # Floating local times with a TZID: the restaurant's clock is what
+        # matters, and it is the same clock the caller was quoted.
+        guest = r.get("name") or "Table"
+        summary = f"{guest} (party of {r.get('party_size')})"
+        description = f"Confirmation {r.get('confirmation_code')}. {r.get('notes') or 'No notes'}"
+        status = "CANCELLED" if r.get("status") == "cancelled" else "CONFIRMED"
+        tz = RESTAURANT_TZ.key
+        lines += [
+            "BEGIN:VEVENT",
+            f"UID:{r['reservation_id']}@luma-bistro",
+            f"DTSTAMP:{stamp}",
+            f"DTSTART;TZID={tz}:{start.strftime('%Y%m%dT%H%M%S')}",
+            f"DTEND;TZID={tz}:{end.strftime('%Y%m%dT%H%M%S')}",
+            f"SUMMARY:{_ics_escape(summary)}",
+            f"LOCATION:{_ics_escape(RESTAURANT_NAME)}",
+            f"DESCRIPTION:{_ics_escape(description)}",
+            f"STATUS:{status}",
+            "END:VEVENT",
+        ]
+    lines.append("END:VCALENDAR")
+
+    return Response(
+        content="\r\n".join(lines) + "\r\n",
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": 'inline; filename="luma-reservations.ics"'},
+    )
 
 
 @app.post("/api/token")

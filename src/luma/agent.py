@@ -17,6 +17,7 @@ Three preconditions are enforced here rather than in the prompt:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 from livekit.agents import Agent, RunContext, function_tool
@@ -41,6 +42,30 @@ from .state import CallState
 
 def _invalid(field: str, hint: str) -> dict[str, Any]:
     return {"status": "invalid_arguments", "field": field, "say_to_caller": hint}
+
+
+# What a host actually says while they look something up. Silence during a tool
+# call is the single most robotic thing a voice agent does -- a real person fills
+# it without thinking. Fires only after the pause becomes noticeable, so quick
+# lookups stay silent rather than gaining a pointless preamble.
+_LOOKUP_FILLERS = ("Let me check that for you.", "One moment.", "Just looking now.")
+_FILLER_DELAY_S = 0.7
+
+
+def _filler(ctx: RunContext | None, *, delay: float = _FILLER_DELAY_S) -> Any:
+    """Async context manager that covers a slow tool call with natural speech.
+
+    Tolerates a missing context so the guardrail tests can drive tools directly
+    without a live session.
+    """
+    if ctx is None:
+        return contextlib.nullcontext()
+    return ctx.with_filler(
+        lambda step: _LOOKUP_FILLERS[step % len(_LOOKUP_FILLERS)],
+        delay=delay,
+        interval=6.0,
+        max_steps=2,
+    )
 
 
 def _slot_guidance(date: str | None) -> dict[str, Any]:
@@ -170,7 +195,8 @@ class LumaAgent(Agent):
                 },
             )
 
-        result = await self._api.check_availability(iso_date, hhmm, size)
+        async with _filler(ctx):
+            result = await self._api.check_availability(iso_date, hhmm, size)
 
         if result.ok:
             payload = result.data
@@ -277,9 +303,10 @@ class LumaAgent(Agent):
         # The API has no "slots for a day" endpoint, so the grid is probed. Done
         # concurrently because six sequential round trips inside a live turn is
         # a noticeable pause. Each answer is real API truth, not configuration.
-        results = await asyncio.gather(
-            *(self._api.check_availability(iso_date, slot, size) for slot in SERVICE_SLOTS)
-        )
+        async with _filler(ctx):
+            results = await asyncio.gather(
+                *(self._api.check_availability(iso_date, slot, size) for slot in SERVICE_SLOTS)
+            )
 
         if all(r.error_code == "INVALID_SLOT" for r in results):
             return self._finish(
@@ -694,7 +721,8 @@ class LumaAgent(Agent):
                 },
             )
 
-        result = await self._api.update_reservation(reservation_id, patch)
+        async with _filler(ctx):
+            result = await self._api.update_reservation(reservation_id, patch)
 
         if result.ok:
             record = result.data
@@ -782,7 +810,8 @@ class LumaAgent(Agent):
                 },
             )
 
-        result = await self._api.cancel_reservation(reservation_id)
+        async with _filler(ctx):
+            result = await self._api.cancel_reservation(reservation_id)
         if result.ok:
             self._log.log("reservation_cancelled", reservation_id=reservation_id)
             return self._finish(

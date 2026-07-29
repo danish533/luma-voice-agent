@@ -12,9 +12,16 @@ from __future__ import annotations
 from .config import MAX_STANDARD_PARTY_SIZE, RESTAURANT_NAME
 from .normalize import today_in_restaurant_tz
 
-# Short on purpose. A caller cannot interrupt a greeting they are still waiting
-# to end, and every second of it is a second before they can say what they want.
-GREETING = "Luma Bistro, this is Ava. How can I help?"
+AGENT_NAME = "Ava"
+
+# Names the agent and the restaurant, then offers the three things a caller
+# actually rings for -- so they know immediately that they can just say it.
+# Kept to one breath: a caller cannot interrupt a greeting still playing, and
+# every extra second delays them saying what they want.
+GREETING = (
+    f"Hi, this is {AGENT_NAME} at {RESTAURANT_NAME}. "
+    "Are you booking a table, or changing one you already have?"
+)
 
 
 def system_prompt(today: str | None = None) -> str:

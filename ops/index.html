@@ -71,6 +71,9 @@
   .card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px; }
   .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:0.05em;
              color:var(--ink-2); margin:0 0 10px; font-weight:600; }
+  .cal { float:right; text-transform:none; letter-spacing:0; font-weight:500;
+         color:var(--info); text-decoration:none; }
+  .cal:hover { text-decoration:underline; }
 
   table { border-collapse:separate; border-spacing:2px; width:100%; }
   th { font-size:11px; color:var(--muted); font-weight:500; text-align:center; padding-bottom:2px;
@@ -94,6 +97,31 @@
   .ev.caller .lb, .ev.agent .lb { color:var(--ink-2); font-weight:600; }
   .ev.caller .dt, .ev.agent .dt { color:var(--ink); }
   .empty { color:var(--muted); padding:22px 0; text-align:center; }
+
+  .res { border:1px solid var(--border); border-radius:9px; margin-bottom:8px; overflow:hidden; }
+  .res:last-child { margin-bottom:0; }
+  .res summary {
+    cursor:pointer; list-style:none; padding:11px 13px; display:flex;
+    align-items:center; gap:11px; flex-wrap:wrap;
+  }
+  .res summary::-webkit-details-marker { display:none; }
+  .res summary:hover { background:color-mix(in srgb, var(--ink) 4%, transparent); }
+  .res .code { font-weight:600; font-variant-numeric:tabular-nums; }
+  .res .who  { color:var(--ink); }
+  .res .when { color:var(--ink-2); }
+  .res .chip {
+    margin-left:auto; font-size:11px; font-weight:600; padding:2px 9px; border-radius:999px;
+    border:1px solid currentColor;
+  }
+  .res .chip.confirmed { color:var(--good); }
+  .res .chip.cancelled { color:var(--critical); }
+  .res dl {
+    margin:0; padding:0 13px 13px; display:grid; grid-template-columns:auto 1fr;
+    gap:5px 14px; font-size:13px; border-top:1px solid var(--grid); padding-top:11px;
+  }
+  .res dt { color:var(--muted); }
+  .res dd { margin:0; word-break:break-word; }
+  .res dd.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; }
 </style>
 </head>
 <body>
@@ -125,6 +153,14 @@
     <h2>Agent event stream</h2>
     <div class="feed" id="feed"></div>
   </div>
+</div>
+
+<div class="card" id="resCard" style="margin-top:14px; display:none">
+  <h2>Reservations this call
+    <a class="cal" href="/calendar.ics" title="Subscribe in Google, Outlook or Apple Calendar">
+      calendar feed (.ics)</a>
+  </h2>
+  <div id="reservations"></div>
 </div>
 
 <script src="/vendor/livekit-client.umd.min.js"></script>
@@ -172,6 +208,54 @@ function kpi(v, label, sub) {
 // not flash "unreachable" across a recording.
 let misses = 0;
 
+function esc(v) {
+  return String(v ?? "—").replace(/[&<>"]/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// Cards stay collapsed/expanded across the 1 Hz refresh: re-rendering an open
+// <details> shut every second would make it impossible to read.
+const openCards = new Set();
+
+function renderReservations(list) {
+  const card = document.getElementById("resCard");
+  card.style.display = list.length ? "" : "none";
+  if (!list.length) return;
+
+  document.getElementById("reservations").innerHTML = list.map(r => {
+    const id = r.reservation_id;
+    const status = (r.status || "confirmed").toLowerCase();
+    const when = r.date ? `${r.date} at ${r.time}` : "";
+    return `
+      <details class="res" data-id="${esc(id)}" ${openCards.has(id) ? "open" : ""}>
+        <summary>
+          <span class="code">${esc(r.confirmation_code)}</span>
+          <span class="who">${esc(r.name)}</span>
+          <span class="when">${esc(when)} · party of ${esc(r.party_size)}</span>
+          <span class="chip ${status}">${esc(status)}</span>
+        </summary>
+        <dl>
+          <dt>Name</dt><dd>${esc(r.name)}</dd>
+          <dt>Phone</dt><dd>${esc(r.phone)}</dd>
+          <dt>Date</dt><dd>${esc(r.date)}</dd>
+          <dt>Time</dt><dd>${esc(r.time)}</dd>
+          <dt>Party</dt><dd>${esc(r.party_size)}</dd>
+          <dt>Notes</dt><dd>${esc(r.notes)}</dd>
+          <dt>Status</dt><dd>${esc(r.status)}</dd>
+          <dt>History</dt><dd>${esc((r.history || []).join(" → "))}</dd>
+          <dt>Reservation id</dt><dd class="mono">${esc(id)}</dd>
+          <dt>Idempotency key</dt><dd class="mono">${esc(r.idempotency_key)}</dd>
+        </dl>
+      </details>`;
+  }).join("");
+
+  for (const el of document.querySelectorAll(".res")) {
+    el.addEventListener("toggle", () => {
+      el.open ? openCards.add(el.dataset.id) : openCards.delete(el.dataset.id);
+    });
+  }
+}
+
 async function tick() {
   let d;
   try {
@@ -211,6 +295,8 @@ async function tick() {
   }
   document.getElementById("grid").innerHTML = html + "</table>";
 
+  renderReservations(d.reservations || []);
+
   const feed = document.getElementById("feed");
   const pinned = feed.scrollTop + feed.clientHeight >= feed.scrollHeight - 40;
   const evs = d.events || [];
@@ -238,6 +324,55 @@ const btn = document.getElementById("call");
 const callState = document.getElementById("callState");
 let room = null;
 
+/* Ringback. The agent takes a few seconds to be dispatched and join, and dead
+   silence in that gap reads as "broken" -- it is what makes a caller say
+   "hello? can you hear me?" into a line that is still connecting. A standard
+   ringing cadence says "it's working, hold on", exactly like a real phone.
+   Synthesised with WebAudio so there is no asset to ship or fail to load.
+   UK cadence: two 400+450Hz bursts, then a long pause. */
+const Ring = (() => {
+  let actx = null, timer = null;
+
+  function burst(at, seconds) {
+    const gain = actx.createGain();
+    gain.connect(actx.destination);
+    // Shaped edges: a raw square-edged tone clicks audibly.
+    gain.gain.setValueAtTime(0, at);
+    gain.gain.linearRampToValueAtTime(0.12, at + 0.02);
+    gain.gain.setValueAtTime(0.12, at + seconds - 0.02);
+    gain.gain.linearRampToValueAtTime(0, at + seconds);
+    for (const hz of [400, 450]) {
+      const osc = actx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = hz;
+      osc.connect(gain);
+      osc.start(at);
+      osc.stop(at + seconds);
+    }
+  }
+
+  function cycle() {
+    const t = actx.currentTime;
+    burst(t, 0.4);
+    burst(t + 0.6, 0.4);
+  }
+
+  return {
+    start() {
+      // Created inside the click handler, so the browser counts it as a
+      // user gesture and autoplay policy allows it.
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === "suspended") actx.resume();
+      cycle();
+      timer = setInterval(cycle, 3000);
+    },
+    stop() {
+      clearInterval(timer);
+      timer = null;
+    },
+  };
+})();
+
 function setCallState(text, cls) {
   callState.textContent = text;
   btn.className = "call" + (cls ? " " + cls : "");
@@ -245,16 +380,27 @@ function setCallState(text, cls) {
 
 async function startCall() {
   btn.disabled = true;
-  setCallState("connecting…", "live");
+  setCallState("ringing…", "live");
+  Ring.start();
   try {
     const cfg = await (await fetch("/api/token", { method: "POST" })).json();
     if (cfg.detail) throw new Error(cfg.detail);
 
     room = new LK.Room({ adaptiveStream: true, dynacast: true });
 
-    // The agent's voice. Attaching to a hidden <audio> is all playback needs.
+    // The agent's voice. `attach()` builds the <audio> element but does not
+    // place it: append it to the document or some browsers never start
+    // playback, and the call is silent for no visible reason.
     room.on(LK.RoomEvent.TrackSubscribed, (track) => {
-      if (track.kind === LK.Track.Kind.Audio) track.attach();
+      if (track.kind !== LK.Track.Kind.Audio) return;
+      const el = track.attach();
+      el.autoplay = true;
+      el.style.display = "none";
+      document.body.appendChild(el);
+      el.play?.().catch(() => {});
+      // The agent has audio on the line: the call is answered, stop ringing.
+      Ring.stop();
+      setCallState("connected", "live");
     });
     room.on(LK.RoomEvent.Disconnected, () => endCall(true));
     // Mirrors the agent's own speaking state, so the button shows who has the
@@ -269,8 +415,10 @@ async function startCall() {
 
     btn.textContent = "End call";
     btn.disabled = false;
-    setCallState("connected · " + cfg.room, "live");
+    // Keep ringing until the agent's audio actually arrives; TrackSubscribed
+    // stops it. Connecting the socket is not the same as being answered.
   } catch (e) {
+    Ring.stop();
     btn.disabled = false;
     setCallState("failed: " + (e.message || e), "");
     room = null;
@@ -278,7 +426,11 @@ async function startCall() {
 }
 
 async function endCall(remote) {
+  Ring.stop();
   if (room && !remote) await room.disconnect();
+  for (const el of document.querySelectorAll("audio[data-lk-attached], audio")) {
+    if (el.srcObject) { el.pause(); el.remove(); }
+  }
   room = null;
   btn.textContent = "Start call";
   btn.disabled = false;

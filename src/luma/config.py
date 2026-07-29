@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 RESTAURANT_NAME = "Luma Bistro"
 RESTAURANT_TZ = ZoneInfo("America/Los_Angeles")
 MAX_STANDARD_PARTY_SIZE = 8
+SLOT_MINUTES = 30  # table turn, from seed_data.json
 
 # The mock API has no endpoint that lists bookable slots or dates: every unknown
 # date/time is a flat 422 INVALID_SLOT with no hint attached. We therefore keep

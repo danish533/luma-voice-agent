@@ -7,6 +7,7 @@ Production:              python -m luma.worker start
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from dotenv import load_dotenv
@@ -77,6 +78,15 @@ async def entrypoint(ctx: JobContext) -> None:
     # hears nothing at all.
     await ctx.connect()
     runtime.logger.log("room_connected", room=ctx.room.name)
+
+    # Warm the reservation API's connection while the caller is still hearing
+    # the greeting: TCP and TLS setup then lands off the critical path instead
+    # of inside the first tool call. Deliberately a health check and not an
+    # availability sweep -- caching which tables are free would mean answering
+    # from a snapshot, and this agent's central rule is that availability comes
+    # fresh from the API every time.
+    warm = asyncio.create_task(runtime.api.health())
+    warm.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
     await runtime.session.start(agent=runtime.agent, room=ctx.room)
     # A fixed greeting rather than a generated one: it is the one turn where
