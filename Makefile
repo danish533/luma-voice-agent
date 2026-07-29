@@ -37,5 +37,13 @@ eval:
 measure:
 	$(PY) scripts/measure_speech_latency.py --runs 6
 
+# Read-only ops console on :8100 for the demo. Never writes; safe to run anytime.
+ops:
+	$(PY) ops/server.py
+
+# Start the demo from a blank slate: fresh API state and an empty event feed.
+clean-logs: reset
+	rm -f logs/*.jsonl
+
 reset:
 	curl -s -X POST http://127.0.0.1:$(API_PORT)/admin/reset

@@ -59,7 +59,22 @@ Then, in three terminals:
 make api        # mock reservation API on :8000  (unmodified, from the starter package)
 make agent      # the voice worker
                 # open the printed LiveKit URL, or https://agents-playground.livekit.io
+make ops        # optional: live ops console on :8100
 ```
+
+### The ops console
+
+`make ops` serves a read-only dashboard that makes the agent's behaviour visible
+rather than merely audible: remaining seats per slot, and a live event stream
+showing reservations written, duplicates blocked, retries recovered, barge-ins,
+and per-turn latency.
+
+It is strictly an observer — it never writes to the reservation API and never
+talks to the agent, so running it cannot affect a call. It also **deliberately
+does not poll 2026-08-16**: the mock API returns its one-and-only 503 on the
+first availability request for that date, and polling would consume that failure
+before you could demonstrate it. Append `?theme=light` or `?theme=dark` to force
+a mode for screen recording.
 
 **No LiveKit account?** `make console` runs the identical agent against your
 terminal's microphone — no transport, no frontend, no signup.
@@ -78,7 +93,12 @@ make eval    # the seven standard scenarios end to end. Needs an LLM key.
 
 ### Demo script
 
-The five required moments, in one continuous call (reset first with `make reset`):
+Start from a blank slate with `make clean-logs` (resets the API and empties the
+event feed), then run `make api`, `make agent` and `make ops`. Put the LiveKit
+playground and the ops console side by side — every moment below is then both
+audible and visible.
+
+The five required moments, in one continuous call:
 
 | # | Say | What to watch for |
 |---|---|---|

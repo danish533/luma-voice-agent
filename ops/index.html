@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Luma Bistro — Live Operations</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --plane:#f9f9f7; --surface:#fcfcfb;
+    --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --border:rgba(11,11,11,0.10);
+    /* Sequential blue, light->dark: remaining seats is a magnitude. */
+    --seq-0:#f0efec; --seq-1:#cde2fb; --seq-2:#9ec5f4; --seq-3:#6da7ec;
+    --seq-4:#3987e5; --seq-5:#256abf; --seq-6:#104281;
+    /* Status palette — fixed, never themed. Always paired with an icon. */
+    --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+    --info:#2a78d6;
+  }
+  /* Dark values are declared under both scopes: the media query covers the OS
+     setting, the data-theme scope covers an explicit ?theme= override, and the
+     :not() guard lets a light stamp beat OS-dark. */
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      --plane:#0d0d0d; --surface:#1a1a19;
+      --ink:#fff; --ink-2:#c3c2b7; --muted:#898781;
+      --grid:#2c2c2a; --border:rgba(255,255,255,0.10);
+      --seq-0:#383835; --info:#3987e5;
+    }
+  }
+  :root[data-theme="dark"] {
+    --plane:#0d0d0d; --surface:#1a1a19;
+    --ink:#fff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --border:rgba(255,255,255,0.10);
+    --seq-0:#383835; --info:#3987e5;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:20px; background:var(--plane); color:var(--ink);
+    font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  header { display:flex; align-items:baseline; gap:14px; margin-bottom:16px; flex-wrap:wrap; }
+  h1 { font-size:19px; margin:0; font-weight:600; letter-spacing:-0.01em; }
+  .meta { color:var(--muted); font-size:12px; }
+  .dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:5px; }
+
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:16px; }
+  .kpi { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
+  .kpi .v { font-size:26px; font-weight:600; line-height:1.15; letter-spacing:-0.02em; }
+  .kpi .l { color:var(--ink-2); font-size:11px; text-transform:uppercase; letter-spacing:0.05em; margin-top:2px; }
+  .kpi .s { color:var(--muted); font-size:11px; margin-top:3px; }
+
+  .cols { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.15fr); gap:14px; align-items:start; }
+  @media (max-width:900px) { .cols { grid-template-columns:1fr; } }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px; }
+  .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:0.05em;
+             color:var(--ink-2); margin:0 0 10px; font-weight:600; }
+
+  table { border-collapse:separate; border-spacing:2px; width:100%; }
+  th { font-size:11px; color:var(--muted); font-weight:500; text-align:center; padding-bottom:2px;
+       font-variant-numeric:tabular-nums; }
+  td.date { font-size:11px; color:var(--ink-2); text-align:right; padding-right:8px; white-space:nowrap; }
+  td.cell { text-align:center; border-radius:4px; padding:9px 0; font-size:13px; font-weight:600;
+            font-variant-numeric:tabular-nums; }
+  .legend { display:flex; align-items:center; gap:6px; margin-top:10px; font-size:11px;
+            color:var(--muted); white-space:nowrap; }
+  .legend i { width:17px; height:9px; border-radius:2px; display:inline-block; flex:0 0 auto; }
+  .legend .note { margin-left:auto; padding-left:12px; overflow:hidden; text-overflow:ellipsis; }
+
+  .feed { max-height:460px; overflow-y:auto; }
+  .ev { display:flex; gap:9px; padding:6px 2px; border-bottom:1px solid var(--grid); align-items:flex-start; }
+  .ev:last-child { border-bottom:0; }
+  .ev .ic { flex:0 0 15px; text-align:center; font-size:11px; line-height:1.5; }
+  .ev .tx { min-width:0; flex:1; }
+  .ev .lb { font-weight:500; }
+  .ev .dt { color:var(--muted); font-size:12px; word-break:break-word; }
+  .ev .tm { color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; flex:0 0 auto; }
+  .ev.caller .lb { color:var(--ink-2); font-weight:600; }
+  .empty { color:var(--muted); padding:22px 0; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Luma Bistro — Live Operations</h1>
+  <span class="meta" id="status"></span>
+</header>
+
+<div class="kpis" id="kpis"></div>
+
+<div class="cols">
+  <div class="card">
+    <h2>Remaining seats by slot</h2>
+    <div id="grid"></div>
+    <div class="legend">
+      <span>0</span>
+      <i style="background:var(--seq-0)"></i><i style="background:var(--seq-1)"></i>
+      <i style="background:var(--seq-2)"></i><i style="background:var(--seq-3)"></i>
+      <i style="background:var(--seq-4)"></i><i style="background:var(--seq-5)"></i>
+      <i style="background:var(--seq-6)"></i>
+      <span>8</span>
+      <span class="note">2026-08-16 not polled — its one-shot 503 is reserved for the failure demo</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Agent event stream</h2>
+    <div class="feed" id="feed"></div>
+  </div>
+</div>
+
+<script>
+// ?theme=light|dark forces a mode, for screen recording where the OS setting
+// isn't what you want on camera. Omit it to follow the OS.
+const forced = new URLSearchParams(location.search).get("theme");
+if (forced === "light" || forced === "dark") {
+  document.documentElement.setAttribute("data-theme", forced);
+}
+
+const ICON ={ good:"●", warning:"▲", serious:"▲", critical:"■", info:"·", caller:"“", latency:"◷" };
+const COLOR = { good:"var(--good)", warning:"var(--warning)", serious:"var(--serious)",
+                critical:"var(--critical)", info:"var(--muted)", caller:"var(--ink-2)",
+                latency:"var(--info)" };
+
+function seqStep(n) {
+  // Remaining seats 0..8 -> one blue hue, light to dark.
+  // Ink is chosen from the *fill step*, never from the seat count and never
+  // from the theme: two cells sharing a fill must share their text colour, and
+  // the blue steps are identical in light and dark mode.
+  if (n === null || n === undefined) return ["var(--grid)", "var(--muted)"];
+  const steps = [0, 1, 1, 2, 3, 3, 4, 5, 6];
+  const step = steps[Math.max(0, Math.min(8, n))];
+  // Step 0 is the only themed fill (near-white on light, near-black on dark),
+  // so it alone follows the theme ink.
+  const ink = step === 0 ? "var(--ink)" : (step >= 4 ? "#ffffff" : "#0b0b0b");
+  return [`var(--seq-${step})`, ink];
+}
+
+function hhmm(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  return d.toTimeString().slice(0, 8);
+}
+
+function kpi(v, label, sub) {
+  return `<div class="kpi"><div class="v">${v}</div><div class="l">${label}</div>` +
+         (sub ? `<div class="s">${sub}</div>` : "") + `</div>`;
+}
+
+// A single dropped poll is not an outage. Keep the last good render and only
+// admit a problem after a few consecutive failures, so a momentary blip does
+// not flash "unreachable" across a recording.
+let misses = 0;
+
+async function tick() {
+  let d;
+  try {
+    d = await (await fetch("/api/state")).json();
+    misses = 0;
+  } catch {
+    if (++misses >= 3) {
+      document.getElementById("status").textContent = "ops server unreachable";
+    }
+    return;
+  }
+
+  document.getElementById("status").innerHTML =
+    `<span class="dot" style="background:${d.api_online ? "var(--good)" : "var(--critical)"}"></span>` +
+    `${d.api_online ? "API online" : "API offline"} · ${d.api_url}` +
+    (d.session ? ` · session ${d.session}` : " · no call yet");
+
+  const s = d.stats || {};
+  document.getElementById("kpis").innerHTML =
+      kpi(s.created ?? 0, "Reservations written")
+    + kpi(s.duplicates_prevented ?? 0, "Duplicates blocked")
+    + kpi(s.retries ?? 0, "Recovered retries")
+    + kpi(s.interruptions ?? 0, "Barge-ins")
+    + kpi(s.turn_p50 != null ? s.turn_p50 + " ms" : "—", "Turn latency p50",
+          s.turn_p95 != null ? `p95 ${s.turn_p95} ms · ${s.turns} turns` : "awaiting a voice turn");
+
+  let html = "<table><tr><th></th>" + d.slots.map(t => `<th>${t}</th>`).join("") + "</tr>";
+  for (const date of d.dates) {
+    const row = (d.grid || {})[date] || {};
+    html += `<tr><td class="date">${date}</td>`;
+    for (const slot of d.slots) {
+      const n = row[slot];
+      const [bg, ink] = seqStep(n);
+      html += `<td class="cell" style="background:${bg};color:${ink}">${n ?? "–"}</td>`;
+    }
+    html += "</tr>";
+  }
+  document.getElementById("grid").innerHTML = html + "</table>";
+
+  const feed = document.getElementById("feed");
+  const pinned = feed.scrollTop + feed.clientHeight >= feed.scrollHeight - 40;
+  const evs = d.events || [];
+  feed.innerHTML = evs.length ? evs.slice().reverse().map(e => `
+      <div class="ev ${e.level}">
+        <span class="ic" style="color:${COLOR[e.level] || "var(--muted)"}">${ICON[e.level] || "·"}</span>
+        <span class="tx"><span class="lb">${e.label}</span>
+          ${e.detail ? `<div class="dt">${e.detail}</div>` : ""}</span>
+        <span class="tm">${hhmm(e.ts)}</span>
+      </div>`).join("")
+    : `<div class="empty">No activity yet — start a call.</div>`;
+  if (pinned) feed.scrollTop = 0;
+}
+
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>
