@@ -6,3 +6,6 @@ __pycache__/
 logs/
 .pytest_cache/
 eval/results/*.json
+
+# Vendored browser SDK (re-fetch with scripts/fetch_vendor.sh)
+ops/vendor/

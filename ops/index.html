@@ -39,10 +39,26 @@
     margin:0; padding:20px; background:var(--plane); color:var(--ink);
     font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
   }
-  header { display:flex; align-items:baseline; gap:14px; margin-bottom:16px; flex-wrap:wrap; }
+  header { display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
   h1 { font-size:19px; margin:0; font-weight:600; letter-spacing:-0.01em; }
   .meta { color:var(--muted); font-size:12px; }
   .dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:5px; }
+
+  .call {
+    font:inherit; font-weight:600; font-size:13px; cursor:pointer;
+    padding:7px 16px; border-radius:999px; border:1px solid transparent;
+    background:var(--good); color:#fff; transition:background .12s;
+  }
+  .call:hover { filter:brightness(1.08); }
+  .call:disabled { opacity:.55; cursor:default; }
+  .call.live { background:var(--critical); }
+  /* A calm ring while the caller is being listened to; it pulses only while
+     the agent is actually speaking, so the state is visible without sound. */
+  .call.speaking { box-shadow:0 0 0 0 rgba(12,163,12,.55); animation:pulse 1.4s infinite; }
+  @keyframes pulse {
+    70%  { box-shadow:0 0 0 9px rgba(12,163,12,0); }
+    100% { box-shadow:0 0 0 0 rgba(12,163,12,0); }
+  }
 
   .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:16px; }
   .kpi { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
@@ -75,14 +91,17 @@
   .ev .lb { font-weight:500; }
   .ev .dt { color:var(--muted); font-size:12px; word-break:break-word; }
   .ev .tm { color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; flex:0 0 auto; }
-  .ev.caller .lb { color:var(--ink-2); font-weight:600; }
+  .ev.caller .lb, .ev.agent .lb { color:var(--ink-2); font-weight:600; }
+  .ev.caller .dt, .ev.agent .dt { color:var(--ink); }
   .empty { color:var(--muted); padding:22px 0; text-align:center; }
 </style>
 </head>
 <body>
 <header>
   <h1>Luma Bistro — Live Operations</h1>
-  <span class="meta" id="status"></span>
+  <button id="call" class="call">Start call</button>
+  <span class="meta" id="callState"></span>
+  <span class="meta" id="status" style="margin-left:auto"></span>
 </header>
 
 <div class="kpis" id="kpis"></div>
@@ -108,6 +127,7 @@
   </div>
 </div>
 
+<script src="/vendor/livekit-client.umd.min.js"></script>
 <script>
 // ?theme=light|dark forces a mode, for screen recording where the OS setting
 // isn't what you want on camera. Omit it to follow the OS.
@@ -116,10 +136,11 @@ if (forced === "light" || forced === "dark") {
   document.documentElement.setAttribute("data-theme", forced);
 }
 
-const ICON ={ good:"●", warning:"▲", serious:"▲", critical:"■", info:"·", caller:"“", latency:"◷" };
+const ICON = { good:"●", warning:"▲", serious:"▲", critical:"■", info:"·",
+               caller:"▸", agent:"◂", latency:"◷" };
 const COLOR = { good:"var(--good)", warning:"var(--warning)", serious:"var(--serious)",
                 critical:"var(--critical)", info:"var(--muted)", caller:"var(--ink-2)",
-                latency:"var(--info)" };
+                agent:"var(--info)", latency:"var(--info)" };
 
 function seqStep(n) {
   // Remaining seats 0..8 -> one blue hue, light to dark.
@@ -206,6 +227,69 @@ async function tick() {
 
 tick();
 setInterval(tick, 1000);
+
+/* ---- Call widget -------------------------------------------------------
+   Joins a LiveKit room from the browser and publishes the microphone. The
+   agent worker is dispatched into the room automatically, so there is nothing
+   to wire up between them. The API secret stays on the server; the page only
+   ever holds a short-lived JWT scoped to one room.                        */
+const LK = window.LivekitClient;
+const btn = document.getElementById("call");
+const callState = document.getElementById("callState");
+let room = null;
+
+function setCallState(text, cls) {
+  callState.textContent = text;
+  btn.className = "call" + (cls ? " " + cls : "");
+}
+
+async function startCall() {
+  btn.disabled = true;
+  setCallState("connecting…", "live");
+  try {
+    const cfg = await (await fetch("/api/token", { method: "POST" })).json();
+    if (cfg.detail) throw new Error(cfg.detail);
+
+    room = new LK.Room({ adaptiveStream: true, dynacast: true });
+
+    // The agent's voice. Attaching to a hidden <audio> is all playback needs.
+    room.on(LK.RoomEvent.TrackSubscribed, (track) => {
+      if (track.kind === LK.Track.Kind.Audio) track.attach();
+    });
+    room.on(LK.RoomEvent.Disconnected, () => endCall(true));
+    // Mirrors the agent's own speaking state, so the button shows who has the
+    // floor -- the visual counterpart of barge-in.
+    room.on(LK.RoomEvent.ActiveSpeakersChanged, (speakers) => {
+      const agentTalking = speakers.some((p) => p.identity !== room.localParticipant.identity);
+      setCallState(agentTalking ? "Ava is speaking" : "listening…", agentTalking ? "live speaking" : "live");
+    });
+
+    await room.connect(cfg.url, cfg.token);
+    await room.localParticipant.setMicrophoneEnabled(true);
+
+    btn.textContent = "End call";
+    btn.disabled = false;
+    setCallState("connected · " + cfg.room, "live");
+  } catch (e) {
+    btn.disabled = false;
+    setCallState("failed: " + (e.message || e), "");
+    room = null;
+  }
+}
+
+async function endCall(remote) {
+  if (room && !remote) await room.disconnect();
+  room = null;
+  btn.textContent = "Start call";
+  btn.disabled = false;
+  setCallState("", "");
+}
+
+btn.addEventListener("click", () => (room ? endCall(false) : startCall()));
+if (!LK) {
+  btn.disabled = true;
+  setCallState("livekit-client not loaded — run scripts/fetch_vendor.sh", "");
+}
 </script>
 </body>
 </html>

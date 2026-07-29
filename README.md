@@ -58,23 +58,36 @@ Then, in three terminals:
 ```bash
 make api        # mock reservation API on :8000  (unmodified, from the starter package)
 make agent      # the voice worker
-                # open the printed LiveKit URL, or https://agents-playground.livekit.io
-make ops        # optional: live ops console on :8100
+make ops        # the call widget + live console -> http://127.0.0.1:8100
 ```
 
-### The ops console
+Open the console and press **Start call**. (The hosted
+[LiveKit playground](https://agents-playground.livekit.io) also works if you
+prefer it.)
 
-`make ops` serves a read-only dashboard that makes the agent's behaviour visible
-rather than merely audible: remaining seats per slot, and a live event stream
-showing reservations written, duplicates blocked, retries recovered, barge-ins,
-and per-turn latency.
+### The ops console — call widget + live view
 
-It is strictly an observer — it never writes to the reservation API and never
-talks to the agent, so running it cannot affect a call. It also **deliberately
-does not poll 2026-08-16**: the mock API returns its one-and-only 503 on the
-first availability request for that date, and polling would consume that failure
-before you could demonstrate it. Append `?theme=light` or `?theme=dark` to force
-a mode for screen recording.
+`make ops` serves the whole demo on one page at **http://127.0.0.1:8100**:
+
+- a **Start call** button that places the call from the browser over WebRTC —
+  press it, allow the microphone, and talk. No playground, no second tab;
+- **remaining seats per slot**, so a booking is visibly subtracted;
+- a **live event stream** — the conversation itself, plus reservations written,
+  duplicates blocked, retries recovered, barge-ins, and per-turn latency.
+
+The page holds only a short-lived JWT scoped to one room; the LiveKit API secret
+never leaves the server. Each call gets a fresh room, so its logs and metrics
+stay separate. The browser SDK is vendored under `ops/vendor/` (refresh with
+`scripts/fetch_vendor.sh`) so a flaky network can't break a recording.
+
+Beyond placing the call it is strictly an observer — it never writes to the
+reservation API. It also **deliberately does not poll 2026-08-16**: the mock API
+returns its one-and-only 503 on the first availability request for that date,
+and polling would consume that failure before you could demonstrate it. Append
+`?theme=light` or `?theme=dark` to force a mode for screen recording.
+
+Prefer no browser at all? `make console` runs the identical agent against your
+terminal microphone.
 
 **No LiveKit account?** `make console` runs the identical agent against your
 terminal's microphone — no transport, no frontend, no signup.

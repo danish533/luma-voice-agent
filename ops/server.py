@@ -14,8 +14,11 @@ the agent's own JSONL logs. Running it or killing it cannot affect a call.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
+import uuid
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +27,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import httpx  # noqa: E402
 import uvicorn  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
-from fastapi import FastAPI  # noqa: E402
+from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.responses import HTMLResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from livekit import api as lk_api  # noqa: E402
 
 from luma.config import SERVICE_SLOTS, Settings  # noqa: E402
 
@@ -126,8 +131,11 @@ def classify(record: dict[str, Any]) -> dict[str, Any] | None:
 
     if event == "user_transcript":
         return _row(ts, "caller", "Caller", record.get("text", ""))
-    if event == "agent_turn" and record.get("interrupted"):
-        return _row(ts, "warning", "Caller interrupted the agent", "barge-in")
+    if event == "agent_turn":
+        text = record.get("text") or ""
+        if record.get("interrupted"):
+            return _row(ts, "warning", "Agent cut off by caller (barge-in)", text)
+        return _row(ts, "agent", "Ava", text) if text else None
     if event == "turn_latency":
         total = record.get("end_of_speech_to_first_audio_ms")
         if total is None:
@@ -213,6 +221,43 @@ async def state() -> dict[str, Any]:
         "events": events,
         "stats": stats,
     }
+
+
+@app.post("/api/token")
+async def token() -> dict[str, str]:
+    """Mint a short-lived token so the browser can join a fresh room.
+
+    The API secret never leaves the server -- the page receives only a JWT
+    scoped to one room. A new room per call keeps each demo's logs, metrics and
+    transcript cleanly separated, since the worker names the session after the
+    room it was dispatched to.
+    """
+    key, secret = os.getenv("LIVEKIT_API_KEY"), os.getenv("LIVEKIT_API_SECRET")
+    url = os.getenv("LIVEKIT_URL")
+    if not (key and secret and url):
+        raise HTTPException(500, "LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET must be set")
+
+    room = f"luma-call-{uuid.uuid4().hex[:8]}"
+    jwt = (
+        lk_api.AccessToken(key, secret)
+        .with_identity(f"caller-{uuid.uuid4().hex[:6]}")
+        .with_name("Caller")
+        .with_grants(
+            lk_api.VideoGrants(
+                room_join=True, room=room, can_publish=True, can_subscribe=True
+            )
+        )
+        .with_ttl(timedelta(minutes=30))
+        .to_jwt()
+    )
+    return {"url": url, "room": room, "token": jwt}
+
+
+app.mount(
+    "/vendor",
+    StaticFiles(directory=Path(__file__).resolve().parent / "vendor"),
+    name="vendor",
+)
 
 
 @app.get("/", response_class=HTMLResponse)

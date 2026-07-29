@@ -1,7 +1,23 @@
 # Evaluation Results
 
-Model: **`google:gemini-3.1-flash-lite`** · STT **Deepgram Nova-3** · TTS
-**Deepgram Aura-2** · run 2026-07-29.
+STT **Deepgram Nova-3** · TTS **Deepgram Aura-2** · run 2026-07-29/30.
+
+**The suite was run end to end on two providers, and both scored 7/7 with
+identical tool-call sequences** — evidence that the guardrails, not the model,
+are what make the agent reliable.
+
+| | `google:gemini-3.1-flash-lite` | `openai:gpt-5.4-nano` |
+|---|---|---|
+| Task success | **7 / 7** | **7 / 7** |
+| Checks | **33 / 33** | **33 / 33** |
+| Duplicate / wrong writes | **0** | **0** |
+| Harness turn latency p50 | **1,617 ms** | 2,525 ms |
+| Harness turn latency p95 | **2,377 ms** | 4,053 ms |
+| Reservation API p50 | 8.9 ms | 10.0 ms |
+
+Detailed tables below are the Gemini run (`eval/results/results.json`); the
+OpenAI run is in `eval/results/results-openai.json`. Gemini is the faster model
+and OpenAI is the safer one to record a demo against — see *Model selection*.
 
 Reproduce with `make api` then `make eval`. Raw output, including full
 transcripts, is in `eval/results/results.json`.
@@ -116,13 +132,42 @@ T3 alone — it passed 4/4. The harness now paces scenarios (`--pace`, default
 20 s) and retries once after a cooldown when it detects quota exhaustion. The
 figures above are from a clean paced run.
 
-**Model selection was a latency decision.** `gemini-3.6-flash` and
-`gemini-flash-latest` both call tools correctly but average **6–12 s** per
-completion because of default extended thinking, and `3.6-flash` rejects
-`thinking_budget=0` outright. `gemini-2.5-flash` is retired for new API keys.
-`gemini-3.1-flash-lite` was chosen on measurement: ~650 ms completions, correct
-tool calls, and it is the closest available model to the requested "3.1 flash"
-(there is no non-lite `gemini-3.1-flash` text model).
+## Model selection
+
+Every candidate was benchmarked rather than assumed. Time-to-first-token with
+the real system prompt and tool schemas, n=6, on two turn types:
+
+| Model | Tool turn p50 | Speech turn p50 | Correct? |
+|---|---:|---:|---|
+| **`gemini-3.1-flash-lite`** | **674 ms** | **597 ms** | yes |
+| `gpt-5.4-nano` | 1,016 ms | 905 ms | yes |
+| `gpt-5.4-mini` | 1,028 ms | 962 ms | called a tool on a plain hours question |
+| `gpt-4.1-mini` | 1,447 ms | — | yes |
+| `gpt-4.1-nano` | 842 ms | — | **no — never called the tool** |
+| `gemini-3.6-flash` | 6–12 s | — | yes, far too slow |
+| `gemini-flash-latest` | ~8 s | — | yes, far too slow |
+
+Four findings worth keeping:
+
+- **Newer and bigger is not better here.** `gemini-3.6-flash` and
+  `gemini-flash-latest` call tools correctly but take 6–12 s because extended
+  thinking is on by default, and `3.6-flash` rejects `thinking_budget=0`
+  outright. On a phone call, a model that reasons better but answers three
+  seconds late is the worse model.
+- **The fastest model was the wrong one.** `gpt-4.1-nano` had the best latency
+  of the OpenAI family and simply never called the tool — it would have
+  cheerfully invented availability. Latency is only meaningful once correctness
+  holds.
+- `gpt-5.4-nano` rejects `reasoning_effort` of `minimal` or `low` when function
+  tools are present; only `none` is accepted, and it made no measurable
+  difference.
+- `gemini-2.5-flash` is retired for new API keys, and there is no non-lite
+  `gemini-3.1-flash` text model.
+
+**Which to run.** Gemini is ~340 ms faster per turn, roughly a quarter of the
+response budget. OpenAI has no free-tier throttle. The repo defaults to
+`gpt-5.4-nano` because a rate limit firing mid-recording is a worse outcome
+than 340 ms; swap two commented lines in `.env` for the faster path.
 
 **Barge-in is not covered by the automated suite.** The harness is text-mode, so
 T3 verifies *correction semantics* — that changing the party size invalidates

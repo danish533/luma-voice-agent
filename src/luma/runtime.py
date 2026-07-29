@@ -175,11 +175,14 @@ def _wire_observability(
         if getattr(item, "role", None) == "assistant":
             text = item.text_content or ""
             state.record_turn("agent", text)
-            # `interrupted` is set when the caller barged in mid-sentence.
+            # `interrupted` is set when the caller barged in mid-sentence, and
+            # `text` is what the caller actually heard before being cut off --
+            # not what the model intended to say.
             logger.log(
                 "agent_turn",
                 interrupted=bool(getattr(item, "interrupted", False)),
                 chars=len(text),
+                text=text,
             )
 
     @session.on("agent_false_interruption")
