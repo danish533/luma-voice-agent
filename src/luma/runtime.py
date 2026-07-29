@@ -35,19 +35,44 @@ class Runtime:
         self.logger.close()
 
 
-def build_llm(settings: Settings) -> Any:
-    """Model choice is env-driven so provider swaps need no code change."""
-    if settings.llm_provider == "google":
+def _one_llm(provider: str, model: str, temperature: float) -> Any:
+    if provider == "google":
         from livekit.plugins import google
 
-        return google.LLM(model=settings.llm_model, temperature=settings.llm_temperature)
-    if settings.llm_provider == "openai":
+        return google.LLM(model=model, temperature=temperature)
+    if provider == "openai":
         from livekit.plugins import openai
 
-        return openai.LLM(model=settings.llm_model, temperature=settings.llm_temperature)
-    raise ValueError(
-        f"Unsupported LLM_PROVIDER {settings.llm_provider!r}; expected 'openai' or 'google'"
+        return openai.LLM(model=model, temperature=temperature)
+    raise ValueError(f"Unsupported LLM provider {provider!r}; expected 'openai' or 'google'")
+
+
+def build_llm(settings: Settings) -> Any:
+    """The configured model, wrapped in a fallback if a second one is available.
+
+    An LLM outage or a rate limit mid-call is otherwise dead air: the caller
+    hears nothing and hangs up. With a fallback the turn is retried against the
+    other provider and the caller notices a pause, not a failure. This is the
+    one component with no graceful degradation of its own -- STT and TTS
+    failures at least leave the conversation recoverable.
+
+    `attempt_timeout` must be at least 10s. It is passed down as a request
+    deadline, and Gemini rejects anything shorter outright -- "Manually set
+    deadline 4s is too short. Minimum allowed deadline is 10s." A tighter value
+    therefore breaks the fallback instead of speeding it up: the standby 400s
+    before it can answer. The ceiling only bites when a provider *hangs*; a hard
+    failure (401, 429, 5xx) switches immediately, which is the common case.
+    """
+    primary = _one_llm(settings.llm_provider, settings.llm_model, settings.llm_temperature)
+    if not settings.llm_fallback_model:
+        return primary
+
+    from livekit.agents import llm as llm_mod
+
+    secondary = _one_llm(
+        settings.llm_fallback_provider, settings.llm_fallback_model, settings.llm_temperature
     )
+    return llm_mod.FallbackAdapter([primary, secondary], attempt_timeout=10.0)
 
 
 def build_turn_detector(settings: Settings) -> Any:

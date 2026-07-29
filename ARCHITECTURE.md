@@ -128,6 +128,15 @@ faults where the same request may plausibly succeed. The delay honours the
 server's `retry_after_ms` hint, capped at 1 s so a live caller is never left in
 silence.
 
+Beyond retry, the LLM has a hot standby: `LLM_FALLBACK_MODEL` wraps the
+configured model and its alternate in LiveKit's `FallbackAdapter`, so a 401,
+429 or hang switches provider mid-turn instead of leaving the caller in
+silence. One sharp edge worth recording: `attempt_timeout` is passed down as a
+request deadline and **Gemini rejects anything under 10 s** ("Manually set
+deadline 4s is too short"), so a tighter value breaks the fallback rather than
+speeding it up. The ceiling only applies to a hang; hard failures switch at
+once.
+
 Never retried: every 4xx. A 422 means the request is impossible and a 409 means
 the table is gone; repeating either just burns the caller's patience.
 

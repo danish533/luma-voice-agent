@@ -167,6 +167,13 @@ refused, so a misheard or hallucinated id cannot mutate a stranger's booking.
 can act on. An exception in a voice agent is dead air; a
 `{"status": "slot_unavailable", "alternatives": [...]}` is something to say.
 
+**Fallbacks at every layer that can fail.** A bounded retry on transient API
+faults; a second LLM provider on hot standby (`LLM_FALLBACK_MODEL`), because an
+LLM outage mid-call is dead air rather than a degraded answer; a phone-number
+search that tries every spelling the API might have stored; and human handoff
+as the terminal fallback, carrying the whole conversation. Verified by breaking
+the primary key mid-call: the turn recovered on the secondary in 2.8 s.
+
 **Alternatives come from the API or not at all.** When a slot is full the tool
 passes through exactly what the API returned, and when the API returns none it
 says so explicitly — otherwise the model reaches back for a list of *seating

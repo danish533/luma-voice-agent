@@ -50,6 +50,10 @@ class Settings:
     llm_provider: str  # "openai" | "google"
     llm_model: str
     llm_temperature: float
+    # Optional second provider. An LLM failure mid-call is dead air, so this is
+    # the one place a hot standby earns its complexity.
+    llm_fallback_provider: str
+    llm_fallback_model: str
 
     stt_model: str
     tts_model: str
@@ -75,6 +79,13 @@ class Settings:
             llm_provider=provider,
             llm_model=os.getenv("LLM_MODEL", default_model),
             llm_temperature=_env_float("LLM_TEMPERATURE", 0.3),
+            llm_fallback_provider=os.getenv(
+                "LLM_FALLBACK_PROVIDER", "google" if provider == "openai" else "openai"
+            ).strip().lower(),
+            # Empty by default: a fallback is only useful if its key is present,
+            # and silently constructing one that 401s on every retry is worse
+            # than having none.
+            llm_fallback_model=os.getenv("LLM_FALLBACK_MODEL", "").strip(),
             stt_model=os.getenv("DEEPGRAM_STT_MODEL", "nova-3"),
             tts_model=os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-thalia-en"),
             # Local by default: end-of-turn detection sits on the most
