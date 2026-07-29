@@ -1,0 +1,16 @@
+# Voice pipeline. The extras pull in only the providers this agent uses.
+livekit-agents[deepgram,openai,google,silero,turn-detector]~=1.0
+
+httpx==0.28.1
+python-dotenv==1.1.1
+
+# To run the vendored mock reservation API from this same venv. pydantic is
+# deliberately unpinned: the starter package pins 2.11.4, which forces an old
+# google-genai and breaks the Gemini path. The mock API uses only basic v2
+# features and runs fine on current pydantic.
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+
+# Test and evaluation
+pytest==9.1.1
+pytest-asyncio==1.3.0
