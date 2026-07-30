@@ -1,7 +1,7 @@
 # Every target must be listed. `ops`, `eval` and `test` are also directory
 # names, and without .PHONY make sees the directory, decides the target is
 # already built, and prints "'ops' is up to date" instead of running anything.
-.PHONY: install api stop stop-api agent console test eval measure ops reset clean-logs smoke
+.PHONY: install api stop stop-api agent console test eval measure ops reset clean-logs smoke migrate migrate-down migration migrate-check migrate-sql
 
 VENV ?= .venv
 PY   := $(VENV)/bin/python
@@ -82,3 +82,26 @@ reset:
 # called a tool, and replied. Requires `make api` and `make agent`.
 smoke:
 	$(PY) scripts/smoke_call.py
+
+# --- Database migrations (production layer) --------------------------------
+# Needs DATABASE_URL. Alembic owns the schema on any server database; the app
+# only auto-creates tables on SQLite, which is dev and test.
+migrate:
+	$(VENV)/bin/alembic upgrade head
+
+migrate-down:
+	$(VENV)/bin/alembic downgrade -1
+
+# Writes a new migration from the difference between the models and the
+# database. Always read it before committing -- autogenerate is a first draft.
+migration:
+	@test -n "$(m)" || (echo 'Usage: make migration m="what changed"'; exit 1)
+	$(VENV)/bin/alembic revision --autogenerate -m "$(m)"
+
+# Fails if the models and the migrations have drifted apart.
+migrate-check:
+	$(VENV)/bin/alembic check
+
+# Prints the SQL instead of running it, for review or for a DBA.
+migrate-sql:
+	$(VENV)/bin/alembic upgrade head --sql

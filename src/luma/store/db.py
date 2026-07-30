@@ -33,12 +33,14 @@ class CallStore:
         # rejects that outright, which is precisely the bug a foreign key is
         # there to catch. Child writes wait on this before running.
         self._call_ready: dict[str, asyncio.Task[Any]] = {}
+        self._is_sqlite = False
         if not self._enabled:
             return
         # SQLite uses StaticPool, which rejects pool sizing arguments outright,
         # so the tuning is applied only to a real server dialect.
+        self._is_sqlite = dsn.startswith("sqlite")
         options: dict[str, Any] = {"echo": echo}
-        if not dsn.startswith("sqlite"):
+        if not self._is_sqlite:
             options.update(
                 pool_pre_ping=True,  # a recycled connection must not fail a live call
                 pool_size=5,
@@ -52,8 +54,19 @@ class CallStore:
         return self._enabled
 
     async def create_schema(self) -> None:
-        """Fine for dev. Production uses migrations -- see README."""
-        if not self._enabled:
+        """Create tables directly. SQLite only.
+
+        Deliberately refuses to touch a server database. Once Alembic owns the
+        schema, letting the application also run `create_all` guarantees drift:
+        `create_all` builds whatever the models currently say and then skips
+        every existing table, so a column added in a later migration is created
+        on a fresh database and silently missing on an upgraded one -- and
+        `alembic check` still reports clean because it compares models to
+        metadata, not to what actually ran.
+
+        SQLite here is dev and test only, where the file is disposable.
+        """
+        if not self._enabled or not self._is_sqlite:
             return
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)

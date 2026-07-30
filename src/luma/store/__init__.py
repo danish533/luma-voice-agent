@@ -2,5 +2,6 @@
 
 from .cache import Cache
 from .db import CallStore
+from .null import NullCache, NullStore
 
-__all__ = ["Cache", "CallStore"]
+__all__ = ["Cache", "CallStore", "NullCache", "NullStore"]
