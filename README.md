@@ -103,6 +103,40 @@ masculine voice introducing itself as "Ava" is the first thing a caller notices.
 **Port 8000 taken?** `make api API_PORT=8010` and set `RESERVATION_API_URL`
 to match.
 
+### Windows
+
+The Python is portable — nothing imports a posix-only module, and `uvloop`
+excludes itself on win32 through its own dependency marker, so the requirements
+resolve cleanly. Only the `Makefile` is Unix-bound: it needs `make`, `sed` and
+`pkill`. `make.ps1` mirrors every target for PowerShell.
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass   # if scripts are blocked
+.\make.ps1 install
+
+.\make.ps1 api        # terminal 1
+.\make.ps1 agent      # terminal 2 — wait for "registered worker"
+.\make.ps1 ops        # terminal 3 -> http://127.0.0.1:8100
+
+.\make.ps1 help       # test, eval, smoke, voices, clean-logs, stop, console
+```
+
+`.env` carries over unchanged. Add `-ApiPort 9000` to override the port.
+
+Three things the script has to do differently: it reads the port from `.env`
+with a regex rather than `sed`, fetches the browser SDK with `Invoke-WebRequest`
+rather than `scripts/fetch_vendor.sh`, and stops services by matching their
+**command line** rather than their name — all three are `python.exe`, so a
+name-based kill would take unrelated Python processes with them.
+
+> **`make.ps1` has not been exercised on a Windows host.** It was written
+> against the Makefile's behaviour but never executed there. If you have WSL2,
+> prefer it: the Makefile runs unchanged and that is what this project was
+> developed and tested against.
+
+If the browser refuses the microphone, use `http://localhost:8100` — Chrome
+only grants mic access on a secure origin, and `localhost` qualifies.
+
 ### Verifying it works
 
 ```bash
