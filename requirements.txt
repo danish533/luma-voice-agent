@@ -4,6 +4,11 @@ livekit-agents[deepgram,openai,google,silero,turn-detector]~=1.0
 httpx==0.28.1
 python-dotenv==1.1.1
 
+# Windows ships no system timezone database, so zoneinfo cannot resolve
+# "America/Los_Angeles" and config.py raises at import — every entry point dies
+# before it runs. Linux and macOS read the OS database and do not need this.
+tzdata; sys_platform == "win32"
+
 # To run the vendored mock reservation API from this same venv. pydantic is
 # deliberately unpinned: the starter package pins 2.11.4, which forces an old
 # google-genai and breaks the Gemini path. The mock API uses only basic v2

@@ -70,16 +70,41 @@ def normalize_phone(raw: str) -> str:
     if has_plus:
         if not 8 <= len(digits) <= 15:
             raise NormalizationError("phone", "That number doesn't look complete.")
+        if digits.startswith("1"):
+            _check_nanp(digits[1:])
         return "+" + digits
     if len(digits) == 10:  # North American number without country code
+        _check_nanp(digits)
         return "+1" + digits
     if len(digits) == 11 and digits.startswith("1"):
+        _check_nanp(digits[1:])
         return "+" + digits
     if 8 <= len(digits) <= 15:
         return "+" + digits
     raise NormalizationError(
         "phone", "I need a ten digit phone number, area code first."
     )
+
+
+def _check_nanp(local: str) -> None:
+    """Reject North American numbers that cannot exist.
+
+    Without this a misheard digit becomes a stored phone number: a caller
+    saying "one two one two, four oh three, double oh seven" produced
+    +11212403007, whose area code is "1212". The booking is then unreachable
+    and, worse, unfindable — every lookup is by phone number.
+
+    NANP rules: neither the area code nor the exchange may begin with 0 or 1.
+    """
+    if len(local) != 10:
+        return  # not a NANP number; leave it to the length checks above
+    area, exchange = local[:3], local[3:6]
+    if area[0] in "01" or exchange[0] in "01":
+        raise NormalizationError(
+            "phone",
+            "That doesn't look like a valid number — could you give me the "
+            "ten digits again, starting with the area code?",
+        )
 
 
 def phone_variants(raw: str) -> list[str]:
@@ -282,4 +307,9 @@ def spoken_code(code: str) -> str:
     ]
     if suffix:
         parts.append(", ".join(_NATO.get(c, c) if c.isalpha() else c for c in suffix))
-    return " — ".join(parts)
+    spelled = " — ".join(parts)
+    # A complete sentence, not a bare fragment. Handed the code alone, the model
+    # tacked it onto the end of a summary with no lead-in -- "...party of four,
+    # phone 1-212-403-007. Luma, 2, 1, Bravo, 8" -- which sounds like noise
+    # rather than something to write down.
+    return f"Your confirmation code is {spelled}."

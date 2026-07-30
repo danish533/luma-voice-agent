@@ -27,6 +27,12 @@ api:
 		echo "A reservation API is already serving :$(API_PORT) — reusing it."; \
 		echo "To restart it:  make stop-api && make api"; \
 	else \
+		echo ""; \
+		echo "  Reservation API — data only, there is NO web page here."; \
+		echo "  Opening http://127.0.0.1:$(API_PORT)/ in a browser returns 404, which is correct."; \
+		echo "    check it:  curl http://127.0.0.1:$(API_PORT)/health"; \
+		echo "    the UI is: http://127.0.0.1:8100   <- run 'make ops' in another terminal"; \
+		echo ""; \
 		$(VENV)/bin/uvicorn app:app --host 127.0.0.1 --port $(API_PORT) --app-dir mock_api; \
 	fi
 

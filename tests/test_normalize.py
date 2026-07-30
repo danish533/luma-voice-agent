@@ -17,6 +17,7 @@ from luma.normalize import (
     normalize_phone,
     normalize_time,
     phone_variants,
+    spoken_code,
     spoken_date,
     spoken_time,
 )
@@ -129,3 +130,34 @@ def test_readback_helpers_are_speakable() -> None:
     assert spoken_date("2026-08-14") == "Friday, August 14"
     assert spoken_time("19:30") == "7:30 PM"
     assert spoken_time("18:00") == "6 PM"
+
+
+@pytest.mark.parametrize(
+    "impossible",
+    [
+        "1 2 1 2 4 0 3 0 0 7",   # heard on a real call; area code became "1212"
+        "1-212-403-007",
+        "0125550123",            # area code starts 0
+        "3101550199",            # exchange starts 1
+    ],
+)
+def test_impossible_north_american_numbers_are_refused(impossible: str) -> None:
+    """A misheard digit must not become a stored phone number.
+
+    Every reservation lookup is by phone, so an unreachable number is also an
+    unfindable booking. NANP forbids an area code or exchange starting 0 or 1.
+    """
+    with pytest.raises(NormalizationError) as exc:
+        normalize_phone(impossible)
+    assert exc.value.field == "phone"
+    assert "area code" in exc.value.hint
+
+
+def test_the_confirmation_code_is_a_whole_sentence() -> None:
+    """Handed a bare code, the model appended it to a summary with no lead-in —
+    "...phone 1-212-403-007. Luma, 2, 1, Bravo, 8" — which sounds like noise
+    rather than something to write down."""
+    spoken = spoken_code("LUMA-21B8")
+    assert spoken.startswith("Your confirmation code is")
+    assert spoken.endswith(".")
+    assert "Bravo" in spoken, "letters must be NATO-spelled"

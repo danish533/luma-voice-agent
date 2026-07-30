@@ -26,8 +26,16 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 
-$Py  = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
-$Pip = Join-Path $PSScriptRoot '.venv\Scripts\pip.exe'
+# Windows venvs put executables in Scripts\, POSIX ones in bin/. Detecting it
+# rather than hardcoding lets this script be exercised under pwsh on Linux and
+# macOS too -- which is the only way it gets tested before you run it.
+$VenvBin = if ($IsWindows -ne $false) { '.venv/Scripts' } else { '.venv/bin' }
+$Exe     = if ($IsWindows -ne $false) { '.exe' } else { '' }
+
+$Py      = Join-Path $PSScriptRoot "$VenvBin/python$Exe"
+$Pip     = Join-Path $PSScriptRoot "$VenvBin/pip$Exe"
+$Uvicorn = Join-Path $PSScriptRoot "$VenvBin/uvicorn$Exe"
+$Pytest  = Join-Path $PSScriptRoot "$VenvBin/pytest$Exe"
 
 function Get-ApiPort {
     if ($ApiPort -gt 0) { return $ApiPort }
@@ -54,24 +62,38 @@ function Test-Api([int]$Port) {
     } catch { return $false }
 }
 
-# Matching on the command line is the only way to find these: they are all
-# python.exe, so a name-based kill would take every Python process with them.
+# Matching on the command line is the only way to find these: all three are
+# python, so a name-based kill would take every unrelated Python process with
+# them. Get-CimInstance is Windows-only, hence the pgrep path for pwsh on
+# Linux and macOS.
 function Stop-Matching([string]$Pattern, [string]$Label) {
-    $procs = Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
-             Where-Object { $_.CommandLine -and $_.CommandLine -match $Pattern }
-    foreach ($p in $procs) {
-        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+    $count = 0
+    if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
+        $procs = Get-CimInstance Win32_Process |
+                 Where-Object { $_.CommandLine -and $_.CommandLine -match $Pattern }
+        foreach ($p in $procs) {
+            Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+            $count++
+        }
+    } else {
+        # Bracket the first character so pgrep does not match its own argv.
+        $safe = $Pattern -replace '^(.)', '[$1]'
+        $ids = (& pgrep -f $safe 2>$null)
+        foreach ($id in $ids) {
+            Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+            $count++
+        }
     }
-    Write-Host "stopped $Label ($($procs.Count))"
+    Write-Host "stopped $Label ($count)"
 }
 
 function Invoke-Vendor {
-    $dest = Join-Path $PSScriptRoot 'ops\vendor'
+    $dest = Join-Path $PSScriptRoot 'ops/vendor'
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     $out = Join-Path $dest 'livekit-client.umd.min.js'
     Invoke-WebRequest -Uri 'https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js' `
                       -OutFile $out -UseBasicParsing
-    Write-Host "vendored $((Get-Item $out).Length) bytes -> ops\vendor"
+    Write-Host "vendored $((Get-Item $out).Length) bytes -> ops/vendor"
 }
 
 $port = Get-ApiPort
@@ -84,8 +106,8 @@ switch ($Target) {
         & $Pip install -r requirements.txt
         # Silero VAD and the turn-detector weights, so the first call does not
         # pay for the download.
-        & $Py scripts\download_models.py
-        if (-not (Test-Path 'ops\vendor\livekit-client.umd.min.js')) { Invoke-Vendor }
+        & $Py scripts/download_models.py
+        if (-not (Test-Path 'ops/vendor/livekit-client.umd.min.js')) { Invoke-Vendor }
         if (-not (Test-Path '.env')) {
             Copy-Item '.env.example' '.env'
             Write-Host "`nCreated .env from the example — fill in your keys before running." -ForegroundColor Yellow
@@ -99,14 +121,19 @@ switch ($Target) {
             Write-Host "A reservation API is already serving :$port - reusing it."
             Write-Host "To restart it:  .\make.ps1 stop-api  then  .\make.ps1 api"
         } else {
-            & (Join-Path $PSScriptRoot '.venv\Scripts\uvicorn.exe') `
-                app:app --host 127.0.0.1 --port $port --app-dir mock_api
+            Write-Host ''
+            Write-Host '  Reservation API - data only, there is NO web page here.'
+            Write-Host "  Opening http://127.0.0.1:$port/ in a browser returns 404, which is correct."
+            Write-Host "    check it:  curl http://127.0.0.1:$port/health"
+            Write-Host '    the UI is: http://127.0.0.1:8100   <- run ".\make.ps1 ops" in another terminal'
+            Write-Host ''
+            & $Uvicorn app:app --host 127.0.0.1 --port $port --app-dir mock_api
         }
     }
 
     'agent'   { Assert-Venv; $env:PYTHONPATH = 'src'; & $Py -m luma.worker dev }
     'console' { Assert-Venv; $env:PYTHONPATH = 'src'; & $Py -m luma.worker console }
-    'ops'     { Assert-Venv; & $Py ops\server.py }
+    'ops'     { Assert-Venv; & $Py ops/server.py }
 
     'test' {
         Assert-Venv
@@ -114,13 +141,13 @@ switch ($Target) {
             Write-Host "The mock API is not running on :$port. Start it first:  .\make.ps1 api" -ForegroundColor Red
             exit 1
         }
-        & (Join-Path $PSScriptRoot '.venv\Scripts\pytest.exe') -q
+        & $Pytest -q
     }
 
-    'eval'    { Assert-Venv; & $Py eval\run_evals.py }
-    'smoke'   { Assert-Venv; & $Py scripts\smoke_call.py }
-    'measure' { Assert-Venv; & $Py scripts\measure_speech_latency.py --runs 6 }
-    'voices'  { Assert-Venv; & $Py scripts\voice_samples.py }
+    'eval'    { Assert-Venv; & $Py eval/run_evals.py }
+    'smoke'   { Assert-Venv; & $Py scripts/smoke_call.py }
+    'measure' { Assert-Venv; & $Py scripts/measure_speech_latency.py --runs 6 }
+    'voices'  { Assert-Venv; & $Py scripts/voice_samples.py }
     'vendor'  { Invoke-Vendor }
 
     'reset' {
@@ -129,7 +156,7 @@ switch ($Target) {
 
     'clean-logs' {
         Invoke-RestMethod -Method Post "http://127.0.0.1:$port/admin/reset" | Out-Null
-        Remove-Item 'logs\*.jsonl' -ErrorAction SilentlyContinue
+        Remove-Item 'logs/*.jsonl' -ErrorAction SilentlyContinue
         Write-Host "API reset and event feed cleared."
     }
 
@@ -142,25 +169,30 @@ switch ($Target) {
     'stop-api' { Stop-Matching 'uvicorn|app:app' 'reservation api' }
 
     default {
-        Write-Host @"
-Luma Bistro voice agent - Windows commands
-
-  .\make.ps1 install      create .venv, install deps, fetch model weights
-  .\make.ps1 api          mock reservation API        (terminal 1)
-  .\make.ps1 agent        voice worker                (terminal 2)
-  .\make.ps1 ops          call widget + console       (terminal 3)
-                          -> http://127.0.0.1:8100
-
-  .\make.ps1 test         81 tests (needs api running)
-  .\make.ps1 eval         the 7 standard scenarios
-  .\make.ps1 smoke        place a real call end to end
-  .\make.ps1 voices       render Deepgram voice samples
-  .\make.ps1 clean-logs   reset API state + clear the feed (before a demo take)
-  .\make.ps1 stop         stop api, agent and ops
-
-  .\make.ps1 console      terminal microphone, no LiveKit account needed
-
-Add -ApiPort 9000 to override the port taken from .env.
-"@
+        # A plain array, not a here-string. PowerShell will not parse a
+        # here-string whose lines end in LF only, which is exactly what a git
+        # checkout produces unless .gitattributes forces CRLF -- and the parse
+        # error it reports points at whatever text happens to follow, not at
+        # the delimiter, so it reads as a problem with the help text itself.
+        @(
+            'Luma Bistro voice agent - Windows commands',
+            '',
+            '  .\make.ps1 install      create .venv, install deps, fetch model weights',
+            '  .\make.ps1 api          mock reservation API      (terminal 1)',
+            '  .\make.ps1 agent        voice worker              (terminal 2)',
+            '  .\make.ps1 ops          call widget + console     (terminal 3)',
+            '                          http://127.0.0.1:8100',
+            '',
+            '  .\make.ps1 test         86 tests (needs api running)',
+            '  .\make.ps1 eval         the 7 standard scenarios',
+            '  .\make.ps1 smoke        place a real call end to end',
+            '  .\make.ps1 voices       render Deepgram voice samples',
+            '  .\make.ps1 clean-logs   reset API state and clear the feed',
+            '  .\make.ps1 stop         stop api, agent and ops',
+            '',
+            '  .\make.ps1 console      terminal microphone, no LiveKit account',
+            '',
+            '  -ApiPort 9000           override the port taken from .env'
+        ) | ForEach-Object { Write-Host $_ }
     }
 }

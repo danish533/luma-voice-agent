@@ -1,0 +1,4 @@
+# PowerShell refuses to parse a here-string whose lines end in LF only.
+# Force CRLF on Windows scripts regardless of what the checkout does.
+*.ps1 text eol=crlf
+*.sh  text eol=lf

@@ -34,7 +34,7 @@ handing off to a human with the whole conversation intact.
 | `src/luma/api_client.py` | HTTP, bounded retry, deterministic idempotency keys |
 | `src/luma/state.py` | Per-call state and the handoff summary |
 | `src/luma/obs.py` | JSON logging, PII redaction, latency book |
-| `tests/` | 81 tests. Guardrails and normalisation, **no LLM key needed** |
+| `tests/` | 86 tests. Guardrails and normalisation, **no LLM key needed** |
 | `eval/run_evals.py` | The seven standard scenarios, scored against API ground truth |
 
 Full reasoning, the twelve architecture answers, and a cost model are in
@@ -129,10 +129,14 @@ rather than `scripts/fetch_vendor.sh`, and stops services by matching their
 **command line** rather than their name — all three are `python.exe`, so a
 name-based kill would take unrelated Python processes with them.
 
-> **`make.ps1` has not been exercised on a Windows host.** It was written
-> against the Makefile's behaviour but never executed there. If you have WSL2,
-> prefer it: the Makefile runs unchanged and that is what this project was
-> developed and tested against.
+Every target is exercised under PowerShell 7 (`api`, `reset`, `test` running
+the full 81-test suite, `vendor`, `clean-logs`, `stop`, `help`, and argument
+validation). The script detects `Scripts\` versus `bin/` and falls back from
+`Get-CimInstance` to `pgrep`, so it behaves the same under pwsh on any OS.
+
+> Two paths remain Windows-only and so are still unverified: the `.exe`
+> executable suffix and the `Get-CimInstance` branch of `stop`. If either
+> misbehaves, WSL2 runs the Makefile unchanged.
 
 If the browser refuses the microphone, use `http://localhost:8100` — Chrome
 only grants mic access on a secure origin, and `localhost` qualifies.
@@ -140,7 +144,7 @@ only grants mic access on a secure origin, and `localhost` qualifies.
 ### Verifying it works
 
 ```bash
-make test    # 81 tests + normalisation tests. No LLM key required.
+make test    # 86 tests + normalisation tests. No LLM key required.
 make eval    # the seven standard scenarios end to end. Needs an LLM key.
 make smoke   # places a REAL call: speaks a line, checks the agent heard it,
              # called a tool, and replied. Needs `make api` + `make agent`.
@@ -245,7 +249,7 @@ narrates a perfect booking it never made fails here.
 | Check-level pass rate | **33 / 33** |
 | Tool-call accuracy | **17 / 17** |
 | Duplicate or wrong writes | **0** |
-| Deterministic guardrail suite | **81 / 81** |
+| Deterministic guardrail suite | **86 / 86** |
 | End-of-speech to first audio | **~3.5 s** on a tool-calling turn, measured on a real call |
 | Reservation API latency | p50 **8.9 ms**, p95 **12.3 ms** |
 
