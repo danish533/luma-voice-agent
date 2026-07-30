@@ -253,7 +253,9 @@ function renderReservations(list) {
 async function tick() {
   let d;
   try {
-    d = await (await fetch("/api/state")).json();
+    const response = await fetch("/api/state");
+    if (response.status === 401) { location.href = "/login"; return; }
+    d = await response.json();
     misses = 0;
   } catch {
     if (++misses >= 3) {
@@ -261,6 +263,10 @@ async function tick() {
     }
     return;
   }
+  render(d);
+}
+
+function render(d) {
 
   document.getElementById("status").innerHTML =
     `<span class="dot" style="background:${d.api_online ? "var(--good)" : "var(--critical)"}"></span>` +
@@ -309,8 +315,51 @@ async function tick() {
   if (pinned) feed.scrollTop = 0;
 }
 
-tick();
-setInterval(tick, 1000);
+/* Live updates over a WebSocket, with polling kept as a fallback.
+   The socket pushes only when something actually changed, so an idle console
+   costs nothing and a booking lands on screen in about a tenth of a second
+   instead of up to a full second late. If the socket cannot be established --
+   an old proxy, a corporate middlebox -- the page degrades to the 1 Hz poll
+   rather than showing nothing. */
+let poller = null;
+
+function startPolling() {
+  if (poller) return;
+  tick();
+  poller = setInterval(tick, 1000);
+}
+
+function stopPolling() {
+  clearInterval(poller);
+  poller = null;
+}
+
+function connectLive() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  let socket;
+  try {
+    socket = new WebSocket(`${proto}//${location.host}/ws`);
+  } catch {
+    startPolling();
+    return;
+  }
+
+  socket.onmessage = (event) => {
+    stopPolling();
+    try { render(JSON.parse(event.data)); } catch { /* ignore a bad frame */ }
+  };
+  socket.onerror = () => startPolling();
+  socket.onclose = (e) => {
+    startPolling();
+    // 1008 is the server refusing an unauthenticated socket -- the session
+    // expired while the tab was open, so send them back to sign in.
+    if (e.code === 1008) { location.href = "/login"; return; }
+    setTimeout(connectLive, 3000);   // otherwise assume a blip and retry
+  };
+}
+
+startPolling();   // paint immediately; the socket takes over once it opens
+connectLive();
 
 /* ---- Call widget -------------------------------------------------------
    Joins a LiveKit room from the browser and publishes the microphone. The

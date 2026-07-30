@@ -34,7 +34,7 @@ handing off to a human with the whole conversation intact.
 | `src/luma/api_client.py` | HTTP, bounded retry, deterministic idempotency keys |
 | `src/luma/state.py` | Per-call state and the handoff summary |
 | `src/luma/obs.py` | JSON logging, PII redaction, latency book |
-| `tests/` | 86 tests. Guardrails and normalisation, **no LLM key needed** |
+| `tests/` | 102 tests. Guardrails and normalisation, **no LLM key needed** |
 | `eval/run_evals.py` | The seven standard scenarios, scored against API ground truth |
 
 Full reasoning, the twelve architecture answers, and a cost model are in
@@ -144,7 +144,7 @@ only grants mic access on a secure origin, and `localhost` qualifies.
 ### Verifying it works
 
 ```bash
-make test    # 86 tests + normalisation tests. No LLM key required.
+make test    # 102 tests + normalisation tests. No LLM key required.
 make eval    # the seven standard scenarios end to end. Needs an LLM key.
 make smoke   # places a REAL call: speaks a line, checks the agent heard it,
              # called a tool, and replied. Needs `make api` + `make agent`.
@@ -249,7 +249,7 @@ narrates a perfect booking it never made fails here.
 | Check-level pass rate | **33 / 33** |
 | Tool-call accuracy | **17 / 17** |
 | Duplicate or wrong writes | **0** |
-| Deterministic guardrail suite | **86 / 86** |
+| Deterministic guardrail suite | **102 / 102** |
 | End-of-speech to first audio | **~3.5 s** on a tool-calling turn, measured on a real call |
 | Reservation API latency | p50 **8.9 ms**, p95 **12.3 ms** |
 

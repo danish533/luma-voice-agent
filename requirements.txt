@@ -30,6 +30,8 @@ aiosqlite>=0.20        # SQLite for local dev and CI
 redis>=5.0
 fakeredis>=2.23        # in-process Redis for tests
 
-# Ops console auth.
-passlib[bcrypt]>=1.7
+# Ops console auth. Password hashing uses hashlib.scrypt from the standard
+# library -- passlib+bcrypt was dropped after passlib 1.7.4's backend probe
+# turned out to be incompatible with bcrypt >= 4.1.
 itsdangerous>=2.2
+python-multipart>=0.0.9   # the sign-in form posts as form data
