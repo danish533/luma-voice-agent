@@ -62,6 +62,11 @@ class Settings:
     log_dir: str
     log_level: str
 
+    # Both optional: with neither set the agent behaves exactly as it does on
+    # main, so the production layer can be adopted piecemeal.
+    database_url: str | None
+    redis_url: str | None
+
     @classmethod
     def from_env(cls) -> "Settings":
         provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
@@ -93,6 +98,8 @@ class Settings:
             # process removes a network round trip from it. "cloud" trades that
             # round trip for worker CPU, which is the better deal at scale.
             turn_detector=os.getenv("TURN_DETECTOR", "local").strip().lower(),
+            database_url=os.getenv("DATABASE_URL") or None,
+            redis_url=os.getenv("REDIS_URL") or None,
             log_dir=os.getenv("LUMA_LOG_DIR", "logs"),
             log_level=os.getenv("LUMA_LOG_LEVEL", "INFO").upper(),
         )

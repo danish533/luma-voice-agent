@@ -1,0 +1,48 @@
+# Postgres and Redis for local development.
+#
+#   docker compose up -d
+#   export DATABASE_URL=postgresql+asyncpg://luma:luma@127.0.0.1:5432/luma
+#   export REDIS_URL=redis://127.0.0.1:6379/0
+#
+# The agent runs without either. Both are optional layers: unset the variables
+# and every store call becomes a no-op and every cache read a miss, which is
+# exactly how the assessment branch behaves.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: luma
+      POSTGRES_PASSWORD: luma
+      POSTGRES_DB: luma
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # The agent starts fast; without this it can reach a Postgres that is
+      # listening but not yet accepting queries.
+      test: ["CMD-SHELL", "pg_isready -U luma -d luma"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # appendonly so idempotency keys survive a restart. Losing them is not
+    # catastrophic -- the reservation API holds its own idempotency cache and
+    # the pre-write search still runs -- but it removes a layer for no reason.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:

@@ -30,6 +30,20 @@ def redact_phone(value: str | None) -> str | None:
     return "*" * (len(digits) - 4) + "".join(digits[-4:])
 
 
+def last4(value: str | None) -> str | None:
+    """Just the final four digits, for a column that stores only those.
+
+    Distinct from `redact_phone`, which returns a full-length mask for log
+    lines. Passing the mask into a fixed-width column silently blew up the
+    whole call summary write -- the digits are what a person reconciles
+    against, and the asterisks carry no information at rest.
+    """
+    if not value:
+        return None
+    digits = [c for c in value if c.isdigit()]
+    return "".join(digits[-4:]) if digits else None
+
+
 def _scrub(obj: Any) -> Any:
     if isinstance(obj, dict):
         return {

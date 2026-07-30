@@ -1,8 +1,88 @@
 {
-  "generated_at": "2026-07-29T22:52:32Z",
+  "generated_at": "2026-07-30T21:17:15Z",
   "llm": "openai:gpt-5.4-nano",
   "api_base_url": "http://127.0.0.1:8010",
   "scenarios": [
+    {
+      "test": "T1",
+      "pass": true,
+      "tool_calls": 2,
+      "tool_call_names": [
+        "check_availability",
+        "create_reservation"
+      ],
+      "duplicate_or_wrong_write": false,
+      "turn_p50_ms": 1258.16,
+      "turn_p95_ms": 4172.92,
+      "api_p50_ms": 14.13,
+      "api_calls": 4,
+      "checks": [
+        {
+          "name": "checked availability",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "confirmed before writing",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "write: exactly one reservation",
+          "passed": true,
+          "detail": "found 1"
+        },
+        {
+          "name": "write: correct details",
+          "passed": true,
+          "detail": "{\"reservation_id\": \"res_462c5cd8fb\", \"confirmation_code\": \"LUMA-652B\", \"name\": \"Jordan Lee\", \"phone\": \"+13105550199\", \"date\": \"2026-08-14\", \"time\": \"18:00\", \"party_size\": 4, \"notes\": null, \"status\": \"confirmed\", \"created_at\": \"2026-07-30T21:16:28.928643Z\"}"
+        },
+        {
+          "name": "write: only one create request",
+          "passed": true,
+          "detail": "1 POSTs"
+        }
+      ],
+      "error": null
+    },
+    {
+      "test": "T2",
+      "pass": true,
+      "tool_calls": 3,
+      "tool_call_names": [
+        "check_availability",
+        "check_availability",
+        "create_reservation"
+      ],
+      "duplicate_or_wrong_write": false,
+      "turn_p50_ms": 2020.76,
+      "turn_p95_ms": 2820.92,
+      "api_p50_ms": 8.52,
+      "api_calls": 5,
+      "checks": [
+        {
+          "name": "checked the requested 18:30 slot",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "offered an API alternative aloud",
+          "passed": true,
+          "detail": "eat\u2014friday, august 14 at seven thirty for four. what name should i put it under? perfect. taylor kim, 424-555-0188, friday august 14 at seven thirty for four\u2014shall i book that? it\u2019s booked for taylor kim\u2014friday, august 14 at seven thirty for four. your confirmation code is luma \u2014 alpha, delta, 4, 6."
+        },
+        {
+          "name": "did not invent availability at 18:30",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "write: booked 19:30 for four",
+          "passed": true,
+          "detail": "[{\"reservation_id\": \"res_cf0413e7eb\", \"confirmation_code\": \"LUMA-AD46\", \"name\": \"Taylor Kim\", \"phone\": \"+14245550188\", \"date\": \"2026-08-14\", \"time\": \"19:30\", \"party_size\": 4, \"notes\": null, \"status\": \"confirmed\", \"created_at\": \"2026-07-30T21:16:39.830514Z\"}]"
+        }
+      ],
+      "error": null
+    },
     {
       "test": "T3",
       "pass": true,
@@ -13,9 +93,9 @@
         "create_reservation"
       ],
       "duplicate_or_wrong_write": false,
-      "turn_p50_ms": 1848.94,
-      "turn_p95_ms": 2564.28,
-      "api_p50_ms": 5.86,
+      "turn_p50_ms": 2144.73,
+      "turn_p95_ms": 3114.94,
+      "api_p50_ms": 6.46,
       "api_calls": 5,
       "checks": [
         {
@@ -31,7 +111,7 @@
         {
           "name": "write: used the corrected party size of four",
           "passed": true,
-          "detail": "[{\"reservation_id\": \"res_cb3d52e7aa\", \"confirmation_code\": \"LUMA-2355\", \"name\": \"Casey Brown\", \"phone\": \"+12135550114\", \"date\": \"2026-08-15\", \"time\": \"18:30\", \"party_size\": 4, \"notes\": null, \"status\": \"confirmed\", \"created_at\": \"2026-07-29T22:52:30.934829Z\"}]"
+          "detail": "[{\"reservation_id\": \"res_181b0c5fe9\", \"confirmation_code\": \"LUMA-A27E\", \"name\": \"Casey Brown\", \"phone\": \"+12135550114\", \"date\": \"2026-08-15\", \"time\": \"18:30\", \"party_size\": 4, \"notes\": null, \"status\": \"confirmed\", \"created_at\": \"2026-07-30T21:16:48.501220Z\"}]"
         },
         {
           "name": "write: kept the original date and time",
@@ -40,33 +120,236 @@
         }
       ],
       "error": null
+    },
+    {
+      "test": "T4",
+      "pass": true,
+      "tool_calls": 3,
+      "tool_call_names": [
+        "find_reservation",
+        "check_availability",
+        "modify_reservation"
+      ],
+      "duplicate_or_wrong_write": false,
+      "turn_p50_ms": 2105.81,
+      "turn_p95_ms": 3819.66,
+      "api_p50_ms": 6.46,
+      "api_calls": 4,
+      "checks": [
+        {
+          "name": "searched before modifying",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "confirmed before writing",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "write: moved to 19:30 for four",
+          "passed": true,
+          "detail": "{\"reservation_id\": \"res_existing_4821\", \"confirmation_code\": \"LUMA-4821\", \"name\": \"Alex Morgan\", \"phone\": \"+13105550147\", \"date\": \"2026-08-14\", \"time\": \"19:30\", \"party_size\": 4, \"notes\": \"Window seat if available\", \"status\": \"confirmed\"}"
+        },
+        {
+          "name": "write: patched the existing record, did not create a new one",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "write: original 18:00 seats released",
+          "passed": true,
+          "detail": ""
+        }
+      ],
+      "error": null
+    },
+    {
+      "test": "T5",
+      "pass": true,
+      "tool_calls": 2,
+      "tool_call_names": [
+        "find_reservation",
+        "cancel_reservation"
+      ],
+      "duplicate_or_wrong_write": false,
+      "turn_p50_ms": 2641.07,
+      "turn_p95_ms": 2641.07,
+      "api_p50_ms": 9.71,
+      "api_calls": 3,
+      "checks": [
+        {
+          "name": "searched before cancelling",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "asked for explicit confirmation",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "write: reservation is cancelled",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "write: cancelled exactly once",
+          "passed": true,
+          "detail": "1 cancel calls"
+        },
+        {
+          "name": "write: seats returned to the pool",
+          "passed": true,
+          "detail": ""
+        }
+      ],
+      "error": null
+    },
+    {
+      "test": "T6",
+      "pass": true,
+      "tool_calls": 1,
+      "tool_call_names": [
+        "check_availability"
+      ],
+      "duplicate_or_wrong_write": false,
+      "turn_p50_ms": 2788.12,
+      "turn_p95_ms": 2788.12,
+      "api_p50_ms": 6.95,
+      "api_calls": 3,
+      "checks": [
+        {
+          "name": "first availability request received a 503",
+          "passed": true,
+          "detail": "[503, 200]"
+        },
+        {
+          "name": "recovered on retry",
+          "passed": true,
+          "detail": "[503, 200]"
+        },
+        {
+          "name": "retried at most once per request",
+          "passed": true,
+          "detail": "[1, 2]"
+        },
+        {
+          "name": "no retry storm",
+          "passed": true,
+          "detail": "2 availability requests"
+        },
+        {
+          "name": "did not claim a result it never received",
+          "passed": true,
+          "detail": "yes, that\u2019s available\u2014sunday, august 16 at six pm for two. what name should i put it under? got it\u2014i\u2019ll proceed with the booking for sunday, august 16 at six pm for two, and if the system won\u2019t hold it after a retry, i\u2019ll transfer you to a colleague. what name should i put it under?"
+        },
+        {
+          "name": "write: nothing was booked on a check-only request",
+          "passed": true,
+          "detail": ""
+        }
+      ],
+      "error": null
+    },
+    {
+      "test": "T7",
+      "pass": true,
+      "tool_calls": 3,
+      "tool_call_names": [
+        "check_availability",
+        "create_reservation",
+        "create_reservation"
+      ],
+      "duplicate_or_wrong_write": false,
+      "turn_p50_ms": 2135.65,
+      "turn_p95_ms": 3186.95,
+      "api_p50_ms": 6.7,
+      "api_calls": 4,
+      "checks": [
+        {
+          "name": "write: exactly one reservation record",
+          "passed": true,
+          "detail": "found 1"
+        },
+        {
+          "name": "write: capacity consumed once",
+          "passed": true,
+          "detail": "remaining 4, expected 4 (6 minus a party of 2)"
+        },
+        {
+          "name": "repeated create returned the same reservation",
+          "passed": true,
+          "detail": "['created', 'already_created']"
+        },
+        {
+          "name": "at most one create reached the API",
+          "passed": true,
+          "detail": "1 POSTs to /reservations"
+        }
+      ],
+      "error": null
     }
   ],
   "transcripts": {
-    "T3": [
+    "T1": [
       {
         "role": "caller",
-        "text": "Saturday, August 15 at 6:30 PM for two."
+        "text": "Reserve a table for four on Friday, August 14 at 6 PM."
       },
       {
         "role": "agent",
-        "text": "Yes, 6:30 works for two on Saturday, August 15\u2014what name should I put it under?"
+        "text": "Great\u2014Friday, August 14 at six PM is available for four. What name should I put it under?"
       },
       {
         "role": "caller",
-        "text": "Casey Brown, 213-555-0114."
+        "text": "Jordan Lee, 310-555-0199."
       },
       {
         "role": "agent",
-        "text": "Great\u2014Casey Brown, 213-555-0114, Saturday August 15 at 6:30 for two. Shall I book that?"
+        "text": "Perfect, Jordan Lee, 310-555-0199\u2014shall I book Friday, August 14 at six PM for four?"
       },
       {
         "role": "caller",
-        "text": "Sorry, make that four people."
+        "text": "No notes."
       },
       {
         "role": "agent",
-        "text": "Okay\u2014Casey Brown, 213-555-0114, Saturday August 15 at 6:30 for four. Shall I book that?"
+        "text": "All set, Jordan Lee\u2014Friday, August 14 at six PM for four is confirmed. Your confirmation code is Luma \u2014 6, 5, 2, Bravo."
+      },
+      {
+        "role": "caller",
+        "text": "Yes, confirm."
+      },
+      {
+        "role": "agent",
+        "text": "Got it\u2014you're confirmed for Friday, August 14 at six PM for four under Jordan Lee. Your confirmation code is Luma \u2014 6, 5, 2, Bravo."
+      }
+    ],
+    "T2": [
+      {
+        "role": "caller",
+        "text": "Book four people Friday, August 14 at 6:30 PM."
+      },
+      {
+        "role": "agent",
+        "text": "I don\u2019t have a table open for four at six thirty on Friday, August fourteenth\u2014would you like five thirty, six, or seven thirty instead?"
+      },
+      {
+        "role": "caller",
+        "text": "I can do 7:30 PM instead."
+      },
+      {
+        "role": "agent",
+        "text": "Great\u2014Friday, August 14 at seven thirty for four. What name should I put it under?"
+      },
+      {
+        "role": "caller",
+        "text": "Taylor Kim, 424-555-0188."
+      },
+      {
+        "role": "agent",
+        "text": "Perfect. Taylor Kim, 424-555-0188, Friday August 14 at seven thirty for four\u2014Shall I book that?"
       },
       {
         "role": "caller",
@@ -74,7 +357,129 @@
       },
       {
         "role": "agent",
-        "text": "All set, Casey Brown\u2014your reservation for Saturday, August 15 at 6:30 for four is confirmed. Luma \u2014 2, 3, 5, 5"
+        "text": "It\u2019s booked for Taylor Kim\u2014Friday, August 14 at seven thirty for four. Your confirmation code is Luma \u2014 Alpha, Delta, 4, 6."
+      }
+    ],
+    "T3": [
+      {
+        "role": "caller",
+        "text": "Saturday, August 15 at 6:30 PM for two."
+      },
+      {
+        "role": "agent",
+        "text": "Great\u2014Saturday, August 15 at six thirty for two. What name should I put it under?"
+      },
+      {
+        "role": "caller",
+        "text": "Casey Brown, 213-555-0114."
+      },
+      {
+        "role": "agent",
+        "text": "And just to confirm, that\u2019s Saturday August 15 at six thirty for two, under Casey Brown\u2014shall I book that?"
+      },
+      {
+        "role": "caller",
+        "text": "Sorry, make that four people."
+      },
+      {
+        "role": "agent",
+        "text": "Got it\u2014Saturday, August 15 at six thirty for four, under Casey Brown. What phone number should I use?"
+      },
+      {
+        "role": "caller",
+        "text": "Confirm."
+      },
+      {
+        "role": "agent",
+        "text": "All set\u2014Saturday, August 15 at six thirty for four under Casey Brown. Your confirmation code is Luma \u2014 Alpha, 2, 7, Echo."
+      }
+    ],
+    "T4": [
+      {
+        "role": "caller",
+        "text": "Change reservation LUMA-4821."
+      },
+      {
+        "role": "agent",
+        "text": "Hi\u2014 I found your reservation for Alex Morgan, Friday August 14 at six PM for two; what would you like to change it to, date or time?"
+      },
+      {
+        "role": "caller",
+        "text": "Move it to 7:30 PM on the same date and make it four people."
+      },
+      {
+        "role": "agent",
+        "text": "Got it\u2014I'll update it to Alex Morgan, Friday August 14 at seven thirty PM for four people; your confirmation code is Luma \u2014 4, 8, 2, 1."
+      },
+      {
+        "role": "caller",
+        "text": "Confirm."
+      },
+      {
+        "role": "agent",
+        "text": "All set, it\u2019s confirmed for Alex Morgan Friday August 14 at seven thirty PM for four; your confirmation code is Luma \u2014 4, 8, 2, 1."
+      }
+    ],
+    "T5": [
+      {
+        "role": "caller",
+        "text": "Cancel reservation LUMA-4821."
+      },
+      {
+        "role": "agent",
+        "text": "I found your reservation for Alex Morgan on Friday, August 14 at 6 PM for two\u2014are you sure you want to cancel it?"
+      },
+      {
+        "role": "caller",
+        "text": "Yes, cancel it."
+      },
+      {
+        "role": "agent",
+        "text": "All set\u2014I\u2019ve cancelled the reservation for Alex Morgan on Friday, August 14 at 6 PM for two. Your confirmation code is Luma \u2014 4, 8, 2, 1."
+      }
+    ],
+    "T6": [
+      {
+        "role": "caller",
+        "text": "Check Sunday, August 16 at 6 PM for two."
+      },
+      {
+        "role": "agent",
+        "text": "Yes, that\u2019s available\u2014Sunday, August 16 at six PM for two. What name should I put it under?"
+      },
+      {
+        "role": "caller",
+        "text": "If it is temporarily unavailable, try once more. If it still fails, hand me off."
+      },
+      {
+        "role": "agent",
+        "text": "Got it\u2014I\u2019ll proceed with the booking for Sunday, August 16 at six PM for two, and if the system won\u2019t hold it after a retry, I\u2019ll transfer you to a colleague. What name should I put it under?"
+      }
+    ],
+    "T7": [
+      {
+        "role": "caller",
+        "text": "Book Friday, August 14 at 8 PM for two."
+      },
+      {
+        "role": "agent",
+        "text": "Great\u2014Friday, August 14 at eight PM is available for two. What name should I put it under?"
+      },
+      {
+        "role": "caller",
+        "text": "Morgan Reed, 310-555-0166."
+      },
+      {
+        "role": "agent",
+        "text": "Morgan Reed, 310-555-0166\u2014Friday, August 14 at eight PM for two. Shall I book that?"
+      },
+      {
+        "role": "caller",
+        "text": "Confirm."
+      },
+      {
+        "role": "agent",
+        "text": "All set, Morgan Reed\u2014Friday, August 14 at eight PM for two is booked. Your confirmation code is Luma \u2014 Charlie, 4, Foxtrot, 5."
       }
     ]
   }

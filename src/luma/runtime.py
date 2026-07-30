@@ -17,6 +17,7 @@ from .agent import LumaAgent
 from .api_client import ReservationApi
 from .config import Settings
 from .obs import JsonLogger, LatencyBook, TurnLatency
+from .store import Cache, CallStore
 from .state import CallState
 
 
@@ -29,9 +30,59 @@ class Runtime:
     state: CallState
     agent: LumaAgent
     session: AgentSession
+    cache: Cache
+    store: CallStore
+
+    async def begin(self) -> None:
+        """Open the call record. Must run before any turn or tool row.
+
+        Lives here rather than in the worker so every entry point gets it --
+        the evaluation harness drives the same agent through `build_runtime`,
+        and when this was worker-only its tool-call writes all failed the
+        foreign key and were swallowed by the background-write guard.
+        """
+        await self.store.create_schema()
+        self.store.call_started(
+            id=self.state.session_id,
+            llm_model=self.settings.llm_model,
+            stt_model=self.settings.stt_model,
+            tts_model=self.settings.tts_model,
+        )
+
+    async def finish(self) -> None:
+        """Close the call record out with its summary figures."""
+        from datetime import datetime, timezone
+
+        from .obs import last4
+
+        summary = self.latency.summary()
+        await self.store.call_ended(
+            self.state.session_id,
+            ended_at=datetime.now(timezone.utc),
+            caller_name=self.state.caller_name,
+            caller_phone_last4=last4(self.state.caller_phone),
+            turn_count=summary.get("voice_turns") or 0,
+            latency_p50_ms=summary.get("voice_p50_ms"),
+            latency_p95_ms=summary.get("voice_p95_ms"),
+            outcome=self.outcome(),
+            handed_off=bool(self.state.handoff),
+        )
+
+    def outcome(self) -> str:
+        """One word for what the call achieved, for the ops dashboard."""
+        if self.state.created_reservations:
+            return "booked"
+        if self.state.handoff:
+            return "handoff"
+        for call in reversed(self.state.tool_calls):
+            if call["status"] in {"modified", "cancelled"}:
+                return call["status"]
+        return "none"
 
     async def aclose(self) -> None:
         await self.api.aclose()
+        await self.cache.aclose()
+        await self.store.aclose()
         self.logger.close()
 
 
@@ -111,8 +162,10 @@ def build_runtime(
     logger = JsonLogger(session_id, log_dir=settings.log_dir, level=settings.log_level)
     latency = LatencyBook()
     api = ReservationApi(settings, logger, latency)
+    cache = Cache(settings.redis_url)
+    store = CallStore(settings.database_url)
     state = CallState(session_id=session_id)
-    agent = LumaAgent(api=api, state=state, logger=logger)
+    agent = LumaAgent(api=api, state=state, logger=logger, cache=cache, store=store)
 
     if voice:
         from livekit.plugins import deepgram
@@ -176,7 +229,7 @@ def build_runtime(
     else:
         session = AgentSession(llm=build_llm(settings))
 
-    _wire_observability(session, logger, latency, state)
+    _wire_observability(session, logger, latency, state, store)
     return Runtime(
         settings=settings,
         logger=logger,
@@ -185,11 +238,17 @@ def build_runtime(
         state=state,
         agent=agent,
         session=session,
+        cache=cache,
+        store=store,
     )
 
 
 def _wire_observability(
-    session: AgentSession, logger: JsonLogger, latency: LatencyBook, state: CallState
+    session: AgentSession,
+    logger: JsonLogger,
+    latency: LatencyBook,
+    state: CallState,
+    store: CallStore,
 ) -> None:
     def _ms(report: Any, key: str) -> float | None:
         value = report.get(key)
@@ -200,6 +259,7 @@ def _wire_observability(
         if ev.is_final:
             logger.log("user_transcript", text=ev.transcript)
             state.record_turn("caller", ev.transcript)
+            store.record_turn(call_id=state.session_id, role="caller", text=ev.transcript)
 
     # `end_of_turn_delay` is reported on the *user* message; the LLM/TTS legs
     # and the end-to-end figure on the *assistant* reply that follows it. They
@@ -240,6 +300,16 @@ def _wire_observability(
         if not interrupted:
             latency.record_turn(turn)
         logger.log("turn_latency", interrupted=interrupted, **turn.as_dict())
+        store.record_turn(
+            call_id=state.session_id,
+            role="agent",
+            text=text,
+            interrupted=interrupted,
+            e2e_ms=turn.e2e_ms,
+            eou_ms=turn.eou_delay_ms,
+            llm_ttft_ms=turn.llm_ttft_ms,
+            tts_ttfb_ms=turn.tts_ttfb_ms,
+        )
 
     @session.on("agent_false_interruption")
     def _on_false_interruption(ev: Any) -> None:

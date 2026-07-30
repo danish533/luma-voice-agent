@@ -69,6 +69,60 @@ def _filler(ctx: RunContext | None, *, delay: float = _FILLER_DELAY_S) -> Any:
     )
 
 
+class _NullCache:
+    """Stand-in when Redis is not configured: every read is a miss."""
+
+    async def get_slots(self, *_: Any) -> None:
+        return None
+
+    async def put_slots(self, *_: Any) -> None:
+        return None
+
+    async def drop_slot(self, *_: Any) -> None:
+        return None
+
+    async def drop_date(self, *_: Any) -> None:
+        return None
+
+    async def claim_booking(self, *_: Any) -> None:
+        return None
+
+    async def store_booking(self, *_: Any) -> None:
+        return None
+
+
+class _NullStore:
+    """Stand-in when no database is configured."""
+
+    def record_tool_call(self, **_: Any) -> None:
+        return None
+
+
+def _slot_listing(date: str, size: int, times: list[str]) -> dict[str, Any]:
+    """The reply shape for a day's free times, cached or freshly probed."""
+    if not times:
+        return {
+            "status": "nothing_available",
+            "date": date,
+            "party_size": size,
+            "instruction": (
+                f"Nothing on {spoken_date(date)} can seat {size}. Say so and offer "
+                "another date. Do NOT suggest times."
+            ),
+        }
+    return {
+        "status": "available_times",
+        "date": date,
+        "spoken_date": spoken_date(date),
+        "party_size": size,
+        "times": [{"time": t, "spoken": spoken_time(t)} for t in times],
+        "instruction": (
+            "These are confirmed free. Read out at most three, most natural "
+            "dinner times first, and let the caller pick."
+        ),
+    }
+
+
 def _slot_guidance(date: str | None) -> dict[str, Any]:
     """Explain *why* the API rejected a slot, and what to ask for instead.
 
@@ -105,17 +159,38 @@ def _slot_guidance(date: str | None) -> dict[str, Any]:
 
 
 class LumaAgent(Agent):
-    def __init__(self, *, api: ReservationApi, state: CallState, logger: JsonLogger) -> None:
+    def __init__(
+        self,
+        *,
+        api: ReservationApi,
+        state: CallState,
+        logger: JsonLogger,
+        cache: Any = None,
+        store: Any = None,
+    ) -> None:
         super().__init__(instructions=system_prompt())
         self._api = api
         self._state = state
         self._log = logger
+        # Optional. With no Redis the agent behaves exactly as it does without
+        # this layer -- every cache call is a miss.
+        self._cache = cache or _NullCache()
+        self._store = store or _NullStore()
 
     # ------------------------------------------------------------- internals
 
     def _finish(self, tool: str, arguments: dict, result: dict) -> dict:
         self._state.record_tool_call(tool, arguments, result)
         self._log.log("tool_result", tool=tool, status=result.get("status"))
+        reservation = result.get("reservation") or {}
+        self._store.record_tool_call(
+            call_id=self._state.session_id,
+            tool=tool,
+            arguments=arguments,
+            status=str(result.get("status")),
+            reservation_id=reservation.get("reservation_id"),
+            confirmation_code=reservation.get("confirmation_code"),
+        )
         return result
 
     async def _do_handoff(self, reason: str) -> dict[str, Any]:
@@ -301,6 +376,18 @@ class LumaAgent(Agent):
                 {"status": "needs_human_handoff", "reason": "party_size_exceeds_standard"},
             )
 
+        # Browsing may be slightly stale -- the caller is choosing, not
+        # committing -- so a warm cache answers instantly. Booking may not: the
+        # availability gate in create_reservation still demands a fresh 200 for
+        # the exact slot before anything is written.
+        if (cached := await self._cache.get_slots(iso_date, size)) is not None:
+            self._log.log("cache_hit", scope="slots", date=iso_date, party_size=size)
+            return self._finish(
+                "list_availability",
+                args,
+                _slot_listing(iso_date, size, cached),
+            )
+
         # The API has no "slots for a day" endpoint, so the grid is probed. Done
         # concurrently because six sequential round trips inside a live turn is
         # a noticeable pause. Each answer is real API truth, not configuration.
@@ -335,6 +422,8 @@ class LumaAgent(Agent):
                 # availability gate without a redundant second check.
                 self._state.remember_availability(iso_date, slot, size, result.data)
                 free.append({"time": slot, "spoken": spoken_time(slot)})
+
+        await self._cache.put_slots(iso_date, size, [f["time"] for f in free])
 
         if not free:
             return self._finish(
@@ -509,6 +598,20 @@ class LumaAgent(Agent):
 
         # Guard 5 -- deterministic key, so a retry lands on the same record.
         key = booking_idempotency_key(clean_name, e164, iso_date, hhmm, size)
+
+        # Guard 6 -- the same key, shared across processes. The in-call memo
+        # only sees this call; a redial that lands on another worker, or a
+        # retry after a restart, sails straight past it. SET NX means exactly
+        # one caller writes and the rest are handed the winner's record.
+        if claimed := await self._cache.claim_booking(key, {"pending": True}):
+            if claimed.get("confirmation_code"):
+                self._log.log("duplicate_prevented", layer="redis_idempotency")
+                return self._finish(
+                    "create_reservation",
+                    args,
+                    {"status": "already_created", "reservation": _public(claimed)},
+                )
+
         result = await self._api.create_reservation(
             name=clean_name,
             phone=e164,
@@ -530,6 +633,10 @@ class LumaAgent(Agent):
             self._state.party_size = size
             self._state.created_reservations.append(record)
             self._state.known_reservation_ids.add(record["reservation_id"])
+            await self._cache.store_booking(key, record)
+            # Surgical: this booking consumed exactly this slot, so remove only
+            # that time and leave every other cached entry on its own expiry.
+            await self._cache.drop_slot(iso_date, hhmm)
             self._log.log(
                 "reservation_created",
                 reservation_id=record["reservation_id"],
@@ -743,6 +850,12 @@ class LumaAgent(Agent):
         if result.ok:
             record = result.data
             self._state.remember_reservations([record])
+            # A move frees a table on one date and consumes one on another, and
+            # the response does not say which slot was released -- so both dates
+            # are re-probed rather than guessed at.
+            for touched in {patch.get("date"), record.get("date")}:
+                if touched:
+                    await self._cache.drop_date(touched)
             # Carry the code and the resulting details, not just the id: a
             # reschedule often happens on a later call than the booking, and a
             # consumer reading only this log line has no other way to identify
@@ -839,6 +952,8 @@ class LumaAgent(Agent):
         async with _filler(ctx):
             result = await self._api.cancel_reservation(reservation_id)
         if result.ok:
+            if freed := result.data.get("date"):
+                await self._cache.drop_date(freed)
             self._log.log(
                 "reservation_cancelled",
                 reservation_id=reservation_id,

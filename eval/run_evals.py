@@ -461,6 +461,7 @@ async def run_scenario(scenario: Scenario, settings: Settings) -> ScenarioResult
         return result
 
     try:
+        await runtime.begin()
         await runtime.session.start(agent=runtime.agent)
         for turn in scenario.script:
             runtime.state.record_turn("caller", turn)
@@ -482,6 +483,7 @@ async def run_scenario(scenario: Scenario, settings: Settings) -> ScenarioResult
 
         result.tool_calls = list(runtime.state.tool_calls)
         result.transcript = list(runtime.state.transcript)
+        await runtime.finish()
     except Exception as exc:  # a crashed scenario is a failed scenario
         result.error = f"{type(exc).__name__}: {exc}"
     finally:
