@@ -12,7 +12,7 @@ Answers to `ARCHITECTURE_QUESTIONS.md` from the starter package.
 | Transport | **WebRTC via LiveKit Cloud** | WebRTC handles jitter, packet loss and echo cancellation; a raw WebSocket does not. Using the hosted SFU meant no frontend to write and no media server to operate, and it is the same path a production SIP deployment would take. |
 | STT | **Deepgram Nova-3**, streaming | Interim results are what make barge-in feel instant — the pipeline reacts to partial speech rather than waiting for a final transcript. `numerals=true` returns "310" instead of "three one zero", which matters enormously for phone numbers. Keyterm biasing on "Luma Bistro" and "confirmation code" measurably reduces mis-hears. |
 | TTS | **Deepgram Aura-2**, streaming | Sub-300 ms time-to-first-byte and natural prosody, and it shares the STT key, so the whole speech layer is one vendor and one bill. |
-| LLM | **Pluggable; results produced on `gemini-3.1-flash-lite`** | The reasoning job here is small — pick a tool, fill five arguments — so latency and tool-call reliability matter far more than raw intelligence. `LLM_PROVIDER` / `LLM_MODEL` are environment variables, so swapping providers is a config change, not a code change (`runtime.build_llm`). |
+| LLM | **Pluggable; `gpt-5.4-nano` by default, `gemini-3.1-flash-lite` the alternate** | The reasoning job here is small — pick a tool, fill five arguments — so latency and tool-call reliability matter far more than raw intelligence. `LLM_PROVIDER` / `LLM_MODEL` are environment variables, so swapping providers is a config change, not a code change (`runtime.build_llm`). |
 
 The model was chosen by measurement, and the measurement was surprising: the
 *newer, larger* flash models are unusable here. `gemini-3.6-flash` and
@@ -58,12 +58,22 @@ caller never received.
 
 Configured in `runtime.py`:
 
-- `min_interruption_duration=0.4` and `min_interruption_words=2` — a cough or an
-  "mhm" should not stop the agent mid-sentence.
+Configured as one `turn_handling` block rather than the deprecated loose
+kwargs — and that is not cosmetic: once a `turn_handling` dict is passed the
+individual kwargs are silently ignored, so mixing the two drops whatever you
+set.
+
+- `interruption.min_duration=0.5` and `min_words=2` — a cough or an "mhm"
+  should not stop the agent mid-sentence.
 - `false_interruption_timeout=2.0` with `resume_false_interruption=True` — if
   the interruption produced no actual transcript, resume rather than sit silent.
-- `preemptive_generation=True` — start the LLM on partial transcripts; a wrong
-  guess is discarded, and the win when it is right is a whole round trip.
+- `endpointing.max_delay=1.2` — the default 4 s ceiling applies whenever the
+  detector is unsure, and on a hesitant caller it is unsure often, so four
+  seconds of silence lands mid-booking and reads as a dead line.
+- `preemptive_generation` — start the LLM on partial transcripts; a wrong guess
+  is discarded, and the win when it is right is a whole round trip. Safe here
+  only because the prompt and tool set are fixed for the call; an agent that
+  rebuilt either per turn would have to disable it.
 
 Barge-ins are observable: `ChatMessage.interrupted` is logged per turn, and
 cancelled LLM/TTS metrics are excluded from latency percentiles so a truncated
