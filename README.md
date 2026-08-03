@@ -36,7 +36,7 @@ handing off to a human with the whole conversation intact.
 | `src/luma/state.py` | Per-call state and the handoff summary |
 | `src/luma/obs.py` | JSON logging, PII redaction, latency book |
 | `src/luma/metrics.py` | Prometheus counters and latency histograms |
-| `tests/` | 106 tests. Guardrails and normalisation, **no LLM key needed** |
+| `tests/` | 119 tests. Guardrails and normalisation, **no LLM key needed** |
 | `eval/run_evals.py` | The seven standard scenarios, scored against API ground truth |
 | `Dockerfile`, `docker-compose.yml` | The whole stack in one command, on any OS |
 
@@ -82,7 +82,7 @@ listening but not yet accepting queries.
 ```bash
 docker compose ps             # health of each service
 docker compose logs -f agent  # the worker
-docker compose run --rm tests # the 106 tests, inside the shipped image
+docker compose run --rm tests # the 119 tests, inside the shipped image
 docker compose down           # stop      (add -v to wipe the data volumes)
 ```
 
@@ -218,7 +218,7 @@ only grants mic access on a secure origin, and `localhost` qualifies.
 ### Verifying it works
 
 ```bash
-make test    # 106 tests: guardrails and normalisation. No LLM key required.
+make test    # 119 tests: guardrails and normalisation. No LLM key required.
 make eval    # the seven standard scenarios end to end. Needs an LLM key.
 make smoke   # places a REAL call: speaks a line, checks the agent heard it,
              # called a tool, and replied. Needs `make api` + `make agent`.
@@ -371,7 +371,7 @@ narrates a perfect booking it never made fails here.
 | Check-level pass rate | **33 / 33** |
 | Tool-call accuracy | **17 / 17** |
 | Duplicate or wrong writes | **0** |
-| Deterministic guardrail suite | **106 / 106** |
+| Deterministic guardrail suite | **119 / 119** |
 | End-of-speech to first audio | **~3.5 s** on a tool-calling turn, measured on a real call |
 | Reservation API latency | p50 **6.4 ms**, p95 **9.9 ms** |
 
@@ -425,11 +425,10 @@ needs that this does not have yet, in the order I would close them.
 | Gap | Why it matters | Fix |
 |---|---|---|
 | **No rate limiting on `/login`** | Unlimited password attempts against a console holding customer data | Per-IP attempt budget with backoff; lockout after N |
-| **`worker.py` has no test** | It is the entrypoint, and it is exactly where the silent-agent bug lived — everything initialised, the caller heard nothing | A test that asserts `ctx.connect()` is awaited before `session.start()` |
 | **No TLS, cookies not `Secure`** | The session cookie crosses the wire in clear outside localhost | Terminate TLS at the ingress; set `Secure` and `SameSite=Strict` |
 | **Secrets live in `.env`** | Readable by any process on the host, and easy to commit by accident | A secrets manager, injected at runtime; `OPS_PASSWORD_HASH` already avoids storing the plaintext |
 | **Logs are written, never shipped or rotated** | JSONL grows unbounded; nothing is queryable across workers | Ship to a log store; rotate on size |
-| **No CI** | Nothing runs the 106 tests except a person remembering to | The suite needs no API keys, so it is a cheap pipeline to add |
+| **No CI** | Nothing runs the 119 tests except a person remembering to | The suite needs no API keys, so it is a cheap pipeline to add |
 | **Single region, no autoscaling policy** | Latency for distant callers; manual capacity | Covered under *Scaling* below |
 
 ---

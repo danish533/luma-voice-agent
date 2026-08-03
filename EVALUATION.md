@@ -141,7 +141,7 @@ production it would be the one number to watch, since it sits inside the turn.
 
 ## Deterministic guardrail suite
 
-Separate from the scenarios above, `make test` runs **106 tests** covering
+Separate from the scenarios above, `make test` runs **119 tests** covering
 normalisation and the write guardrails directly against the mock API, with no
 model in the loop. They are fast (~3 s), deterministic, and need no LLM key,
 which makes them CI-appropriate in a way that a model-driven suite is not.
