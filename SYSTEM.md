@@ -454,17 +454,17 @@ not have, in the order I would close them:
 | Gap | Why it matters |
 |---|---|
 | **No rate limiting on `/login`** | Unlimited password attempts against a console holding customer data |
-| **`worker.py` has no test** | It is the entrypoint, and exactly where the silent-agent bug lived — everything initialises, the caller hears nothing |
 | **No TLS, cookie not `Secure`** | The session cookie crosses the wire in clear outside localhost |
 | **Secrets in `.env`** | Readable by any process on the host; easy to commit by accident |
 | **Logs never shipped or rotated** | JSONL grows unbounded; nothing is queryable across workers |
-| **No CI** | Nothing runs the 106 tests except someone remembering to |
+| **No CI** | Nothing runs the 119 tests except someone remembering to |
 | **No hash-pinned lock file** | Transitive dependencies float; a compromised release lands unnoticed |
 | **No alerting rules** | The metrics exist; nothing pages on them |
 
-If only one gets fixed, make it the `worker.py` test. Every other gap *degrades*
-the system; that one is where a bug is **invisible** — the worker registers, the
-metrics look healthy, the tests pass, and the caller hears silence.
+`tests/test_worker.py` closes what used to be the top of this list — the
+entrypoint had no test, and it is where the silent-agent bug lived. Each
+assertion there was verified by reintroducing the bug and watching the right
+test fail; a test that has never failed has not been shown to test anything.
 
 ---
 
@@ -556,7 +556,7 @@ WebSocket.
 
 | Layer | What it proves | Command |
 |---|---|---|
-| **106 unit tests** | Guardrails and normalisation. No LLM key needed | `make test` / `docker compose run --rm tests` |
+| **119 unit tests** | Guardrails, normalisation, and the worker entrypoint. No LLM key needed | `make test` / `docker compose run --rm tests` |
 | **7 scenarios** | The required workflows end to end, scored against **API ground truth** — not the agent's own narration | `make eval` |
 | **Smoke call** | The voice path actually carries audio | `make smoke` |
 

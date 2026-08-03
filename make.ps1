@@ -215,7 +215,7 @@ switch ($Target) {
             '  .\make.ps1 ops          call widget + console     (terminal 3)',
             '                          http://127.0.0.1:8100',
             '',
-            '  .\make.ps1 test         106 tests (needs api running)',
+            '  .\make.ps1 test         119 tests (needs api running)',
             '  .\make.ps1 eval         the 7 standard scenarios',
             '  .\make.ps1 smoke        place a real call end to end',
             '  .\make.ps1 voices       render Deepgram voice samples',
