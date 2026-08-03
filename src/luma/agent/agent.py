@@ -10,6 +10,7 @@ at a glance rather than buried in two hundred lines of branching.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from livekit.agents import Agent, RunContext, function_tool
@@ -54,11 +55,25 @@ class LumaAgent(Agent):
         # production layer is deployed.
         self._cache = cache or NullCache()
         self._store = store or NullStore()
+        self._started_at: dict[str, float] = {}
 
     # ------------------------------------------------------------- internals
 
     def _start(self, tool: str, arguments: dict[str, Any]) -> None:
         self._log.log("tool_call", tool=tool, arguments=arguments)
+        self._started_at[tool] = time.perf_counter()
+
+    def _elapsed_ms(self, tool: str) -> float | None:
+        """Whole-tool duration: normalisation, guards, and the API round trip.
+
+        Distinct from the api_call latency already logged per request -- a tool
+        can make several, or refuse before making any, and it is the total that
+        sits inside the caller's turn. Keyed by tool name, which is exact while
+        tool calls are sequential and approximate if two of the *same* tool ever
+        run concurrently; that is worth a millisecond of error, not a lock.
+        """
+        started = self._started_at.pop(tool, None)
+        return None if started is None else (time.perf_counter() - started) * 1000
 
     def _finish(self, tool: str, arguments: dict, result: dict) -> dict:
         status = str(result.get("status"))
@@ -71,6 +86,7 @@ class LumaAgent(Agent):
             tool=tool,
             arguments=arguments,
             status=str(result.get("status")),
+            latency_ms=self._elapsed_ms(tool),
             reservation_id=reservation.get("reservation_id"),
             confirmation_code=reservation.get("confirmation_code"),
         )

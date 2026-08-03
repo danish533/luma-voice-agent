@@ -25,7 +25,7 @@ from livekit.plugins import silero
 from livekit.plugins.turn_detector import english as _turn_detector_en  # noqa: F401
 
 from . import metrics
-from .config import BOOKABLE_DATES, SERVICE_SLOTS, Settings
+from .config import PREWARM_DATES, SERVICE_SLOTS, Settings
 from .prompts import greeting
 from .runtime import build_runtime
 
@@ -101,13 +101,17 @@ async def _prewarm(runtime) -> None:
     90-second-old snapshot is a booking made on a guess. Prefetching the common
     party sizes turns the usual opening question -- "what have you got on
     Saturday?" -- from six round trips into none.
+
+    PREWARM_DATES, not BOOKABLE_DATES: warming the date the API is scripted to
+    fail on spends its single 503 on a request no caller is waiting for, which
+    silently removes the transient-failure path from anything you could observe.
     """
     try:
         await runtime.api.health()
         if not await runtime.cache.ping():
             return
         # Two and four cover most tables; anything else probes on demand.
-        for date in BOOKABLE_DATES:
+        for date in PREWARM_DATES:
             for size in (2, 4):
                 if await runtime.cache.get_slots(date, size) is not None:
                     continue
@@ -120,7 +124,7 @@ async def _prewarm(runtime) -> None:
                     if r.ok and r.data.get("available")
                 ]
                 await runtime.cache.put_slots(date, size, free)
-        runtime.logger.log("prewarm_complete", dates=len(BOOKABLE_DATES))
+        runtime.logger.log("prewarm_complete", dates=len(PREWARM_DATES))
     except Exception as exc:  # warming is best-effort and must never fail a call
         runtime.logger.log("prewarm_failed", error=str(exc))
 

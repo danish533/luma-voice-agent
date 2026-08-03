@@ -29,28 +29,90 @@ handing off to a human with the whole conversation intact.
 |---|---|
 | `src/luma/worker.py` | LiveKit entrypoint; VAD prewarm; call lifecycle |
 | `src/luma/runtime.py` | Builds the session (models, turn-taking, barge-in) and wires metrics. Shared by the worker **and** the eval suite, so tests exercise what ships |
-| `src/luma/agent.py` | The seven tools and the guardrails that constrain them |
+| `src/luma/agent/` | The seven tools, and the guardrails that constrain them — one named function per precondition |
 | `src/luma/normalize.py` | Speech → API-valid values (E.164, ISO dates, 24-hour times) |
 | `src/luma/api_client.py` | HTTP, bounded retry, deterministic idempotency keys |
+| `src/luma/store/` | Postgres call record and the Redis idempotency/slot cache. Both optional |
 | `src/luma/state.py` | Per-call state and the handoff summary |
 | `src/luma/obs.py` | JSON logging, PII redaction, latency book |
-| `tests/` | 102 tests. Guardrails and normalisation, **no LLM key needed** |
+| `src/luma/metrics.py` | Prometheus counters and latency histograms |
+| `tests/` | 106 tests. Guardrails and normalisation, **no LLM key needed** |
 | `eval/run_evals.py` | The seven standard scenarios, scored against API ground truth |
+| `Dockerfile`, `docker-compose.yml` | The whole stack in one command, on any OS |
+
+**[SYSTEM.md](SYSTEM.md)** is the full walkthrough — what every piece is for, how
+a call flows end to end, where to change any given behaviour, and how this
+differs from a production deployment. Start there if you are new to the code.
 
 Full reasoning, the twelve architecture answers, and a cost model are in
-**[ARCHITECTURE.md](ARCHITECTURE.md)**.
+**[ARCHITECTURE.md](ARCHITECTURE.md)**. Measurements are in
+**[EVALUATION.md](EVALUATION.md)**.
 
 ---
 
 ## Setup
 
-Needs Python 3.12+ and keys for [LiveKit Cloud](https://cloud.livekit.io) (free),
+Needs keys for [LiveKit Cloud](https://cloud.livekit.io) (free),
 [Deepgram](https://deepgram.com) (free credit) and one LLM provider.
 
 ```bash
 git clone <this-repo> && cd luma-voice-agent
 cp .env.example .env          # fill in the keys
-make install                  # venv, deps, and the turn-detector model weights
+```
+
+Then pick one of two routes. **Docker is the recommended one**, and on Windows
+it is the supported one.
+
+### Docker — one command
+
+Needs Docker Desktop (Windows, macOS) or Docker Engine with the Compose plugin
+(Linux). Nothing else: no Python, no virtualenv, no model download.
+
+```bash
+docker compose up --build     # first build ~4 min, then seconds
+```
+
+Open **http://localhost:8100** and press **Start call**.
+
+Six services come up in dependency order — Postgres, Redis, the reservation
+API, a one-shot migration job, the agent worker, the console — each gated on
+the previous one's healthcheck, so nothing starts against a database that is
+listening but not yet accepting queries.
+
+```bash
+docker compose ps             # health of each service
+docker compose logs -f agent  # the worker
+docker compose run --rm tests # the 106 tests, inside the shipped image
+docker compose down           # stop      (add -v to wipe the data volumes)
+```
+
+`make up / down / logs / ps / docker-test` wrap these, and `.\make.ps1` has the
+same targets on Windows.
+
+**Signing in:** username `ops`, password from `OPS_PASSWORD` in `.env`. Leave it
+unset and one is generated for the run and printed once — `docker compose logs ops`.
+
+Three things are baked into the image on purpose, because each is a way that
+"it started" and "it works" come apart:
+
+- **the Silero VAD and turn-detector weights**, so the container is ready when
+  it reports ready rather than stalling the first caller on a HuggingFace
+  download — or failing outright on a network that blocks the egress;
+- **the LiveKit browser SDK**, which is gitignored, so a fresh clone has no
+  copy and the console's Start-call button would 404 at demo time;
+- **`livekit-agents` pinned to the 1.6 line**, the one the results in
+  [EVALUATION.md](EVALUATION.md) were measured on.
+
+Container-internal addresses (`reservation-api:8000`, `postgres:5432`) override
+whatever `.env` says, so one file serves both routes. If a port is already
+taken, override it: `POSTGRES_PORT=55432 docker compose up`.
+
+### Native — Python on the host
+
+Needs Python 3.12+.
+
+```bash
+make install                  # venv, deps, model weights, browser SDK
 ```
 
 Then, in three terminals:
@@ -65,6 +127,10 @@ make ops        # the call widget + live console -> http://127.0.0.1:8100
 Open the console and press **Start call**. (The hosted
 [LiveKit playground](https://agents-playground.livekit.io) also works if you
 prefer it.)
+
+Postgres and Redis are optional here — `docker compose up -d postgres redis`
+starts just those two, and without them every store write is a no-op and every
+cache read a miss.
 
 ### The ops console — call widget + live view
 
@@ -82,10 +148,12 @@ The browser plays a **ringback tone** while the agent is being dispatched —
 several seconds of silence reads as "broken", and a ringing cadence reads as
 "hold on". It stops the instant the agent's audio arrives.
 
-The page holds only a short-lived JWT scoped to one room; the LiveKit API secret
-never leaves the server. Each call gets a fresh room, so its logs and metrics
-stay separate. The browser SDK is vendored under `ops/vendor/` (refresh with
-`scripts/fetch_vendor.sh`) so a flaky network can't break a recording.
+The page is behind a sign-in — it shows customer names, dates, party sizes and
+partial phone numbers, and it can mint a room token. It holds only a short-lived
+JWT scoped to one room; the LiveKit API secret never leaves the server. Each call
+gets a fresh room, so its logs and metrics stay separate. The browser SDK is
+vendored under `ops/vendor/` (refresh with `make vendor`; the Docker build fetches
+it automatically) so a flaky network can't break a recording.
 
 Beyond placing the call it is strictly an observer — it never writes to the
 reservation API. It also **deliberately does not poll 2026-08-16**: the mock API
@@ -105,10 +173,22 @@ to match.
 
 ### Windows
 
-The Python is portable — nothing imports a posix-only module, and `uvloop`
-excludes itself on win32 through its own dependency marker, so the requirements
-resolve cleanly. Only the `Makefile` is Unix-bound: it needs `make`, `sed` and
-`pkill`. `make.ps1` mirrors every target for PowerShell.
+**Use Docker.** Install Docker Desktop, then:
+
+```powershell
+copy .env.example .env        # fill in the keys
+docker compose up --build     # -> http://localhost:8100
+```
+
+That is the whole procedure, and it is the same procedure as on Linux and
+macOS. The container is Linux either way, so nothing depends on how Windows
+resolves a path, terminates a line, or names an executable.
+
+The native path also works, and `make.ps1` mirrors every Makefile target for
+PowerShell — the Python itself is portable, and `uvloop` excludes itself on
+win32 through its own dependency marker, so the requirements resolve cleanly.
+It is only the `Makefile` that is Unix-bound: it needs `make`, `sed` and
+`pkill`.
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass   # if scripts are blocked
@@ -118,25 +198,19 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass   # if scripts are bl
 .\make.ps1 agent      # terminal 2 — wait for "registered worker"
 .\make.ps1 ops        # terminal 3 -> http://127.0.0.1:8100
 
-.\make.ps1 help       # test, eval, smoke, voices, clean-logs, stop, console
+.\make.ps1 help       # docker targets, test, eval, smoke, stop, console
 ```
 
 `.env` carries over unchanged. Add `-ApiPort 9000` to override the port.
 
-Three things the script has to do differently: it reads the port from `.env`
-with a regex rather than `sed`, fetches the browser SDK with `Invoke-WebRequest`
-rather than `scripts/fetch_vendor.sh`, and stops services by matching their
-**command line** rather than their name — all three are `python.exe`, so a
-name-based kill would take unrelated Python processes with them.
+Two things the script has to do differently: it reads the port from `.env` with
+a regex rather than `sed`, and it stops services by matching their **command
+line** rather than their name — all three are `python.exe`, so a name-based
+kill would take unrelated Python processes with them.
 
-Every target is exercised under PowerShell 7 (`api`, `reset`, `test` running
-the full 81-test suite, `vendor`, `clean-logs`, `stop`, `help`, and argument
-validation). The script detects `Scripts\` versus `bin/` and falls back from
-`Get-CimInstance` to `pgrep`, so it behaves the same under pwsh on any OS.
-
-> Two paths remain Windows-only and so are still unverified: the `.exe`
-> executable suffix and the `Get-CimInstance` branch of `stop`. If either
-> misbehaves, WSL2 runs the Makefile unchanged.
+> The native path is exercised under PowerShell 7 on Linux, which cannot cover
+> the `.exe` suffix or the `Get-CimInstance` branch of `stop`. Those two are
+> the reason Docker is the recommendation rather than merely an option.
 
 If the browser refuses the microphone, use `http://localhost:8100` — Chrome
 only grants mic access on a secure origin, and `localhost` qualifies.
@@ -144,11 +218,15 @@ only grants mic access on a secure origin, and `localhost` qualifies.
 ### Verifying it works
 
 ```bash
-make test    # 102 tests + normalisation tests. No LLM key required.
+make test    # 106 tests: guardrails and normalisation. No LLM key required.
 make eval    # the seven standard scenarios end to end. Needs an LLM key.
 make smoke   # places a REAL call: speaks a line, checks the agent heard it,
              # called a tool, and replied. Needs `make api` + `make agent`.
 ```
+
+Under Docker, `docker compose run --rm tests` runs the same suite inside the
+image that ships, against the containerised API — so it tests what is deployed
+rather than what happens to be installed on the host.
 
 `make smoke` is the one that catches a broken voice path. Everything can pass
 `make test` and `make eval` while the caller hears nothing at all — that is
@@ -156,12 +234,55 @@ exactly the failure mode a missing `ctx.connect()` produces.
 
 `make eval` writes `eval/results/results.md` and `results.json`.
 
+### Operating it
+
+Everything below is optional at runtime. Unset `DATABASE_URL` and `REDIS_URL`
+and every store write becomes a no-op and every cache read a miss — the agent
+behaves exactly as it does without them, so the production layer can be adopted
+piecemeal. Docker sets both automatically.
+
+| What | Where | For |
+|---|---|---|
+| Liveness | `:8100/healthz` | Is the process able to answer at all? Checks nothing downstream — see below |
+| Readiness | `:8100/readyz` | Should traffic come here? 503 when a dependency the console needs is unreachable |
+| Metrics | `:9091/metrics` | Prometheus, alongside LiveKit's own worker gauges |
+| Worker health | `:8081/` | LiveKit's own; 503 if the inference process died or the LiveKit connection failed |
+| Migrations | `make migrate` | Alembic. `make migrate-check` fails if models and migrations have drifted |
+
+`/healthz` deliberately checks nothing downstream. A liveness probe that fails
+during a dependency outage gets the container **restarted** for someone else's
+problem, turning a degraded reservation API into a crash-looping console.
+`/readyz` does check, and 503 takes the instance out of rotation without killing
+it, so it recovers on its own.
+
+The series worth alerting on is `luma_tool_calls_total{tool,status}`, because it
+counts **guardrail refusals** alongside successes. A refusal is not an error, but
+a change in the refusal rate means a prompt edit has started pushing the model
+toward writes it should not be making — the failure that stays invisible in logs
+until someone is double-booked.
+
+Prometheus runs in multiprocess mode, and that is not optional: every call runs
+in a job child process, so a counter incremented inside a tool would live in that
+child's memory and vanish when the call ends, leaving the parent reporting zero
+tool calls forever while the agent worked perfectly.
+
+Analytics writes are fire-and-forget by design. A call must never stall because
+the call-record database is slow — the caller is waiting in real time, and losing
+a transcript row is a far smaller problem than a two-second silence. Everything
+that must not be lost goes through the reservation API, which the agent *does*
+wait on.
+
 ### Demo script
 
-Start from a blank slate with `make clean-logs` (resets the API and empties the
-event feed), then run `make api`, `make agent` and `make ops`. Put the LiveKit
-playground and the ops console side by side — every moment below is then both
-audible and visible.
+Set `OPS_PASSWORD` and `OPS_SECRET_KEY` in `.env` first — without the secret key
+every restart drops your session, which is not something to discover mid-take.
+
+Start from a blank slate (`make clean-logs` natively, or `docker compose down -v
+&& docker compose up -d`), then open the console. It places the call itself, so
+one window shows both sides: what is said, and what was actually written.
+
+Do one throwaway call before recording — the first call after a cold start is
+1.5–2 s slower than steady state.
 
 The five required moments, in one continuous call:
 
@@ -179,7 +300,8 @@ The five required moments, in one continuous call:
 
 The interesting engineering is not the pipeline — LiveKit provides that. It is
 the set of preconditions that hold **regardless of what the language model
-decides to do**, all enforced in `agent.py`, all covered by tests.
+decides to do**, all enforced in `src/luma/agent/guards.py` as one named function
+per precondition, all covered by tests.
 
 **No booking without verified availability.** `create_reservation` refuses unless
 a *successful* `check_availability` ran for those exact details in this call. The
@@ -249,9 +371,9 @@ narrates a perfect booking it never made fails here.
 | Check-level pass rate | **33 / 33** |
 | Tool-call accuracy | **17 / 17** |
 | Duplicate or wrong writes | **0** |
-| Deterministic guardrail suite | **102 / 102** |
+| Deterministic guardrail suite | **106 / 106** |
 | End-of-speech to first audio | **~3.5 s** on a tool-calling turn, measured on a real call |
-| Reservation API latency | p50 **8.9 ms**, p95 **12.3 ms** |
+| Reservation API latency | p50 **6.4 ms**, p95 **9.9 ms** |
 
 Measured on `gemini-3.1-flash-lite` — chosen on latency, not preference. The
 `3.6-flash` and `flash-latest` models call tools correctly but average **6–12 s**
@@ -288,6 +410,27 @@ Stated plainly, because they are the things I would fix next.
    number without touching the agent, but it needs a trunk provider.
 7. **The eval suite cannot run in parallel**, because `/admin/reset` mutates
    process-global state in the supplied API.
+8. **No lock file.** `requirements.txt` pins the direct dependencies, including
+   `livekit-agents` to the 1.6 line the results were measured on, but the
+   transitive set floats — two builds a month apart are not byte-identical. The
+   fix is a hash-pinned lock (`pip-compile --generate-hashes`), which also
+   closes the supply-chain hole where a compromised transitive release lands in
+   the image unnoticed.
+
+### What is missing before this is genuinely production-ready
+
+The items above are design trade-offs. These are gaps — things a real deployment
+needs that this does not have yet, in the order I would close them.
+
+| Gap | Why it matters | Fix |
+|---|---|---|
+| **No rate limiting on `/login`** | Unlimited password attempts against a console holding customer data | Per-IP attempt budget with backoff; lockout after N |
+| **`worker.py` has no test** | It is the entrypoint, and it is exactly where the silent-agent bug lived — everything initialised, the caller heard nothing | A test that asserts `ctx.connect()` is awaited before `session.start()` |
+| **No TLS, cookies not `Secure`** | The session cookie crosses the wire in clear outside localhost | Terminate TLS at the ingress; set `Secure` and `SameSite=Strict` |
+| **Secrets live in `.env`** | Readable by any process on the host, and easy to commit by accident | A secrets manager, injected at runtime; `OPS_PASSWORD_HASH` already avoids storing the plaintext |
+| **Logs are written, never shipped or rotated** | JSONL grows unbounded; nothing is queryable across workers | Ship to a log store; rotate on size |
+| **No CI** | Nothing runs the 106 tests except a person remembering to | The suite needs no API keys, so it is a cheap pipeline to add |
+| **Single region, no autoscaling policy** | Latency for distant callers; manual capacity | Covered under *Scaling* below |
 
 ---
 

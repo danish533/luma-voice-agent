@@ -17,7 +17,8 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet('install', 'api', 'agent', 'console', 'ops', 'test', 'eval',
                  'smoke', 'measure', 'voices', 'reset', 'clean-logs', 'stop',
-                 'stop-api', 'vendor', 'help')]
+                 'stop-api', 'vendor', 'up', 'down', 'logs', 'ps',
+                 'docker-test', 'help')]
     [string]$Target = 'help',
 
     [int]$ApiPort = 0
@@ -87,13 +88,11 @@ function Stop-Matching([string]$Pattern, [string]$Label) {
     Write-Host "stopped $Label ($count)"
 }
 
+# Delegates to the Python fetcher, which is also what the Docker build runs.
+# One copy of the URL, and one place where a bad download gets caught.
 function Invoke-Vendor {
-    $dest = Join-Path $PSScriptRoot 'ops/vendor'
-    New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    $out = Join-Path $dest 'livekit-client.umd.min.js'
-    Invoke-WebRequest -Uri 'https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js' `
-                      -OutFile $out -UseBasicParsing
-    Write-Host "vendored $((Get-Item $out).Length) bytes -> ops/vendor"
+    Assert-Venv
+    & $Py scripts/fetch_vendor.py
 }
 
 $port = Get-ApiPort
@@ -168,6 +167,28 @@ switch ($Target) {
 
     'stop-api' { Stop-Matching 'uvicorn|app:app' 'reservation api' }
 
+    # --- Docker ------------------------------------------------------------
+    # Needs nothing from the venv: the image carries its own Python, its own
+    # dependencies and the model weights. This is the shortest route to a
+    # working demo on Windows.
+    'up' {
+        docker compose up --build -d
+        Write-Host ''
+        docker compose ps
+        Write-Host ''
+        Write-Host '  console   http://localhost:8100'
+        Write-Host '  metrics   http://localhost:9091/metrics'
+        Write-Host ''
+        Write-Host '  Sign-in password: set OPS_PASSWORD in .env, or read the'
+        Write-Host '  generated one from  .\make.ps1 logs  (printed at startup).'
+        Write-Host ''
+    }
+
+    'down'        { docker compose down }
+    'logs'        { docker compose logs -f agent ops }
+    'ps'          { docker compose ps }
+    'docker-test' { docker compose run --rm tests }
+
     default {
         # A plain array, not a here-string. PowerShell will not parse a
         # here-string whose lines end in LF only, which is exactly what a git
@@ -177,13 +198,24 @@ switch ($Target) {
         @(
             'Luma Bistro voice agent - Windows commands',
             '',
+            'Docker (recommended - no Python, no venv, no model download):',
+            '',
+            '  .\make.ps1 up           build and start the whole stack',
+            '                          http://localhost:8100',
+            '  .\make.ps1 logs         follow the worker and console',
+            '  .\make.ps1 ps           service health',
+            '  .\make.ps1 docker-test  run the suite inside the image',
+            '  .\make.ps1 down         stop everything',
+            '',
+            'Native (needs Python 3.12+):',
+            '',
             '  .\make.ps1 install      create .venv, install deps, fetch model weights',
             '  .\make.ps1 api          mock reservation API      (terminal 1)',
             '  .\make.ps1 agent        voice worker              (terminal 2)',
             '  .\make.ps1 ops          call widget + console     (terminal 3)',
             '                          http://127.0.0.1:8100',
             '',
-            '  .\make.ps1 test         86 tests (needs api running)',
+            '  .\make.ps1 test         106 tests (needs api running)',
             '  .\make.ps1 eval         the 7 standard scenarios',
             '  .\make.ps1 smoke        place a real call end to end',
             '  .\make.ps1 voices       render Deepgram voice samples',

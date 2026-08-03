@@ -1,0 +1,42 @@
+# The whole build context is uploaded to the daemon before the first
+# instruction runs. A 2 GB .venv here is 2 GB of waiting on every build, and
+# on Windows, where the context crosses a VM boundary, it is considerably
+# worse than that.
+
+.venv/
+.venv-*/
+.git/
+.gitignore
+.gitattributes
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Runtime output, not build input. logs/ in particular is a volume at run time
+# -- baking a copy into the image would be shadowed by the mount anyway.
+logs/
+.prometheus/
+tmp-pg/
+
+# Secrets never enter an image layer: anything COPYed is readable forever via
+# `docker history`, even if a later layer deletes it. Compose reads .env from
+# the host at run time and passes it in as environment instead.
+.env
+.env.*
+!.env.example
+
+# ~10 MB of wav used by a host-side script for auditioning TTS voices.
+voice_samples/
+
+# Re-fetched during the build, so whatever is on this machine is irrelevant --
+# and a fresh clone has no copy at all.
+ops/vendor/
+
+# Documentation, and the starter package's own single-service compose file.
+*.md
+mock_api/docker-compose.yml
+
+# The mock API is built from its own context (./mock_api); it does not need the
+# agent's source, and the agent's image does not need the mock API.
+mock_api/

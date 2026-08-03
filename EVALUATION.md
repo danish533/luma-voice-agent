@@ -1,6 +1,8 @@
 # Evaluation Results
 
-STT **Deepgram Nova-3** · TTS **Deepgram Aura-2** · run 2026-07-29/30.
+STT **Deepgram Nova-3** · TTS **Deepgram Aura-2** · re-run 2026-08-04 against the
+current tree, after the agent was split into a package and metrics, health
+probes and the container build were added. Nothing regressed.
 
 **The suite was run end to end on two providers, and both scored 7/7 with
 identical tool-call sequences** — evidence that the guardrails, not the model,
@@ -11,9 +13,17 @@ are what make the agent reliable.
 | Task success | **7 / 7** | **7 / 7** |
 | Checks | **33 / 33** | **33 / 33** |
 | Duplicate / wrong writes | **0** | **0** |
-| Harness turn latency p50 | **1,617 ms** | 2,126 ms |
-| Harness turn latency p95 | **2,377 ms** | 2,758 ms |
-| Reservation API p50 | 8.9 ms | 10.0 ms |
+| Harness turn latency p50 | **1,655 ms** | 2,824 ms |
+| Harness turn latency p95 | **3,160 ms** | 4,423 ms |
+| Reservation API p50 | 6.4 ms | 6.4 ms |
+
+> These latency figures moved between the 2026-07-29/30 run and this one
+> (Gemini p50 1,617 → 1,655 ms; OpenAI p50 2,126 → 2,824 ms) with no change to
+> the request path. That spread is provider-side variance on the day, and it is
+> the honest reason to quote a range rather than a single number: the correctness
+> columns are reproducible, the latency columns are a sample. The *measured voice
+> latency* below, taken on a real call, is the figure to trust for a caller's
+> experience.
 
 Detailed tables below are the Gemini run (`eval/results/results.json`); the
 OpenAI run is in `eval/results/results-openai.json`. Gemini is the faster model
@@ -31,13 +41,13 @@ booking it never made fails here.
 
 | Test | Pass/Fail | Final outcome | Tool calls | Duplicate/wrong write? | End-of-speech to first audio | API latency (p50) | Notes |
 |---|---|---|---|---|---:|---:|---|
-| T1 | **PASS** | One reservation, Jordan Lee, 2026-08-14 18:00, party 4 | 2 — `check_availability` → `create_reservation` | no | ~3.5 s (measured, tool turn) | 8.2 ms | Exactly one `POST /reservations` |
-| T2 | **PASS** | Booked 19:30 for 4 after 18:30 came back full | 3 — `check_availability` ×2 → `create_reservation` | no | ~3.5 s | 8.6 ms | Offered the API's own alternatives; nothing booked at 18:30 |
-| T3 | **PASS** | One reservation, 2026-08-15 18:30, **party 4** | 3 — `check_availability` ×2 → `create_reservation` | no | ~3.5 s | 9.3 ms | Correction forced a fresh availability check before the write |
-| T4 | **PASS** | `res_existing_4821` moved to 19:30, party 4 | 3 — `find_reservation` → `check_availability` → `modify_reservation` | no | ~3.5 s | 8.9 ms | Patched in place; 18:00 seats released |
-| T5 | **PASS** | `res_existing_4821` cancelled | 2 — `find_reservation` → `cancel_reservation` | no | ~3.5 s | 8.9 ms | One cancel call; seats returned to the pool |
-| T6 | **PASS** | 503 then success; result reported honestly | 1 — `check_availability` | no | ~3.5 s | 8.1 ms | Statuses `[503, 200]`, 2 attempts, no retry storm |
-| T7 | **PASS** | One reservation, capacity consumed once | 3 — `check_availability` → `create_reservation` ×2 | no | ~3.5 s | 7.7 ms | Repeat create returned `already_created` without a second POST |
+| T1 | **PASS** | One reservation, Jordan Lee, 2026-08-14 18:00, party 4 | 2 — `check_availability` → `create_reservation` | no | ~3.5 s (measured, tool turn) | 5.1 ms | Exactly one `POST /reservations` |
+| T2 | **PASS** | Booked 19:30 for 4 after 18:30 came back full | 3 — `check_availability` ×2 → `create_reservation` | no | ~3.5 s | 5.9 ms | Offered the API's own alternatives; nothing booked at 18:30 |
+| T3 | **PASS** | One reservation, 2026-08-15 18:30, **party 4** | 3 — `check_availability` ×2 → `create_reservation` | no | ~3.5 s | 7.6 ms | Correction forced a fresh availability check before the write |
+| T4 | **PASS** | `res_existing_4821` moved to 19:30, party 4 | 3 — `find_reservation` → `check_availability` → `modify_reservation` | no | ~3.5 s | 6.3 ms | Patched in place; 18:00 seats released |
+| T5 | **PASS** | `res_existing_4821` cancelled | 2 — `find_reservation` → `cancel_reservation` | no | ~3.5 s | 6.5 ms | One cancel call; seats returned to the pool |
+| T6 | **PASS** | 503 then success; result reported honestly | 1 — `check_availability` | no | ~3.5 s | 7.7 ms | Statuses `[503, 200]`, 2 attempts, no retry storm |
+| T7 | **PASS** | One reservation, capacity consumed once | 3 — `check_availability` → `create_reservation` ×2 | no | ~3.5 s | 6.8 ms | Repeat create returned `already_created` without a second POST |
 
 ### Aggregate
 
@@ -48,8 +58,8 @@ booking it never made fails here.
 | **Tool-call accuracy** | 17 / 17 calls correct — right tool, right arguments, right order |
 | **Duplicate-write rate** | **0 / 7** |
 | **Wrong-write rate** | **0 / 7** |
-| Reservation API latency | p50 **8.9 ms**, p95 **12.3 ms** |
-| Text-mode turn latency (LLM + tools, no audio) | p50 **1,617 ms**, p95 **2,377 ms** |
+| Reservation API latency | p50 **6.4 ms**, p95 **9.9 ms** |
+| Text-mode turn latency (LLM + tools, no audio) | p50 **1,655 ms**, p95 **3,160 ms** |
 
 Note on tool-call counts: T2 and T3 legitimately call `check_availability`
 twice — once for the time the caller first asked for, once after they changed
@@ -124,14 +134,14 @@ Where the time goes, and what would move it:
 - The worker registered in **India West**; co-locating with the caller removes a
   round trip from every leg.
 
-The reservation API is not a factor: p50 **8.9 ms** against a local mock. In
+The reservation API is not a factor: p50 **6.4 ms** against a local mock. In
 production it would be the one number to watch, since it sits inside the turn.
 
 ---
 
 ## Deterministic guardrail suite
 
-Separate from the scenarios above, `make test` runs **86 tests** covering
+Separate from the scenarios above, `make test` runs **106 tests** covering
 normalisation and the write guardrails directly against the mock API, with no
 model in the loop. They are fast (~3 s), deterministic, and need no LLM key,
 which makes them CI-appropriate in a way that a model-driven suite is not.

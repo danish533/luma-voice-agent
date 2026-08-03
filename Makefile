@@ -1,7 +1,7 @@
 # Every target must be listed. `ops`, `eval` and `test` are also directory
 # names, and without .PHONY make sees the directory, decides the target is
 # already built, and prints "'ops' is up to date" instead of running anything.
-.PHONY: install api stop stop-api agent console test eval measure ops reset clean-logs smoke migrate migrate-down migration migrate-check migrate-sql
+.PHONY: install api stop stop-api agent console test eval measure ops reset clean-logs smoke migrate migrate-down migration migrate-check migrate-sql vendor up down logs ps docker-test
 
 VENV ?= .venv
 PY   := $(VENV)/bin/python
@@ -18,6 +18,12 @@ install:
 	# Fetches the Silero VAD and turn-detector weights so the first call does
 	# not pay for the download.
 	$(PY) scripts/download_models.py
+	# The browser SDK is gitignored, so a fresh clone has no copy and the
+	# console's Start-call button would 404.
+	$(PY) scripts/fetch_vendor.py
+
+vendor:
+	$(PY) scripts/fetch_vendor.py
 
 # The mock reservation API, unmodified from the starter package.
 # Says who already holds the port rather than leaving you to decode
@@ -82,6 +88,39 @@ reset:
 # called a tool, and replied. Requires `make api` and `make agent`.
 smoke:
 	$(PY) scripts/smoke_call.py
+
+# --- Docker ----------------------------------------------------------------
+# The whole stack -- reservation API, Postgres, Redis, migrations, worker,
+# console -- from one command. This is the supported path on Windows, where
+# `make`, `sed` and `pkill` do not exist.
+
+# Note this deliberately does not reuse API_PORT above. That one is parsed out
+# of RESERVATION_API_URL for the *native* run; inside compose the agent reaches
+# the API by service name, and the published port is only for the host.
+up:
+	docker compose up --build -d
+	@echo ""
+	@docker compose ps
+	@echo ""
+	@echo "  console   http://localhost:8100"
+	@echo "  metrics   http://localhost:9091/metrics"
+	@echo ""
+	@echo "  Sign-in password: set OPS_PASSWORD in .env, or read the generated"
+	@echo "  one from  make logs  (printed once at startup)."
+	@echo ""
+
+down:
+	docker compose down
+
+logs:
+	docker compose logs -f agent ops
+
+ps:
+	docker compose ps
+
+# Runs the suite inside the image that ships, against the containerised API.
+docker-test:
+	docker compose run --rm tests
 
 # --- Database migrations (production layer) --------------------------------
 # Needs DATABASE_URL. Alembic owns the schema on any server database; the app

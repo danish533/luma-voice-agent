@@ -35,7 +35,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from livekit import api as lk_api  # noqa: E402
 
-from luma.config import SERVICE_SLOTS, Settings  # noqa: E402
+from luma.config import PREWARM_DATES, SERVICE_SLOTS, Settings  # noqa: E402
 from luma.obs import redact_phone  # noqa: E402
 from luma.store import Cache  # noqa: E402
 
@@ -43,11 +43,11 @@ from auth import COOKIE_NAME, Auth  # noqa: E402
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-# 2026-08-16 is deliberately absent. The mock API returns its one-and-only 503
-# on the first availability request for that date, and polling it here would
-# consume that failure before the demo could show it. The API-failure scenario
-# is observed through the event feed instead.
-POLLED_DATES = ("2026-08-14", "2026-08-15")
+# Shared with the worker's prefetch rather than kept as a private copy here:
+# 2026-08-16 is the date the mock API is scripted to fail on, and *anything*
+# that polls it in the background consumes that one 503 before a caller can.
+# Two places enforcing the same rule from two lists is how one of them drifts.
+POLLED_DATES = PREWARM_DATES
 GRID_TTL_S = 2.0
 # Change-detection interval. Cheap because the grid is cached and the log
 # parse is bounded; the client sees a change within roughly this long.
@@ -550,5 +550,19 @@ async def index(request: Request):
 
 
 if __name__ == "__main__":
-    print(f"Ops console  http://127.0.0.1:8100   (watching {settings.api_base_url})")
-    uvicorn.run(app, host="127.0.0.1", port=8100, log_level="warning")
+    # Loopback by default. This page shows customer names, dates, party sizes
+    # and partial phone numbers, so binding every interface is a decision, not
+    # a default -- on a laptop on a cafe network 0.0.0.0 publishes all of it.
+    # The container sets OPS_HOST=0.0.0.0 because a published port is the only
+    # way anything reaches it, and the sign-in gate is what guards it there.
+    host = os.getenv("OPS_HOST", "127.0.0.1")
+    port = int(os.getenv("OPS_PORT", "8100"))
+    shown = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+    print(f"Ops console  http://{shown}:{port}   (watching {settings.api_base_url})")
+    # Without this, a run with no OPS_PASSWORD generates one and never says
+    # what it is -- the console is then unreachable by design and unreachable
+    # in practice. It is the first thing anyone needs and the last thing they
+    # would think to look for.
+    for line in auth.banner():
+        print(line)
+    uvicorn.run(app, host=host, port=port, log_level="warning")
