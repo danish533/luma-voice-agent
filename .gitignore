@@ -11,3 +11,9 @@ logs/
 # Vendored browser SDK (re-fetch with scripts/fetch_vendor.sh)
 ops/vendor/
 voice_samples/
+
+# Local Postgres data dir used for development
+/tmp-pg/
+
+# Prometheus multiprocess collection directory
+.prometheus/

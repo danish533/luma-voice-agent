@@ -13,6 +13,7 @@ the agent's own JSONL logs. Running it or killing it cannot affect a call.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -27,27 +28,68 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import httpx  # noqa: E402
 import uvicorn  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
-from fastapi import FastAPI, HTTPException  # noqa: E402
-from fastapi.responses import HTMLResponse  # noqa: E402
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, WebSocket  # noqa: E402
+from fastapi import WebSocketDisconnect  # noqa: E402
+from fastapi import Response  # noqa: E402
+from fastapi.responses import HTMLResponse, RedirectResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from livekit import api as lk_api  # noqa: E402
 
-from luma.config import SERVICE_SLOTS, Settings  # noqa: E402
+from luma.config import PREWARM_DATES, SERVICE_SLOTS, Settings  # noqa: E402
 from luma.obs import redact_phone  # noqa: E402
+from luma.store import Cache  # noqa: E402
+
+from auth import COOKIE_NAME, Auth  # noqa: E402
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-# 2026-08-16 is deliberately absent. The mock API returns its one-and-only 503
-# on the first availability request for that date, and polling it here would
-# consume that failure before the demo could show it. The API-failure scenario
-# is observed through the event feed instead.
-POLLED_DATES = ("2026-08-14", "2026-08-15")
+# Shared with the worker's prefetch rather than kept as a private copy here:
+# 2026-08-16 is the date the mock API is scripted to fail on, and *anything*
+# that polls it in the background consumes that one 503 before a caller can.
+# Two places enforcing the same rule from two lists is how one of them drifts.
+POLLED_DATES = PREWARM_DATES
 GRID_TTL_S = 2.0
+# Change-detection interval. Cheap because the grid is cached and the log
+# parse is bounded; the client sees a change within roughly this long.
+WS_TICK_S = 0.4
 MAX_EVENTS = 400
 
 app = FastAPI(title="Luma Bistro Ops", docs_url=None, redoc_url=None)
 settings = Settings.from_env()
+auth = Auth()
 _grid_cache: dict[str, Any] = {"at": 0.0, "grid": {}}
+
+
+def require_user(request: Request) -> str:
+    """Guards every route that exposes customer data or mints a room token."""
+    return auth.require(request)
+
+
+LOGIN_PAGE = """<!doctype html>
+<meta charset="utf-8"><title>Luma Ops — sign in</title>
+<style>
+ body{font:15px/1.5 system-ui,-apple-system,sans-serif;background:#f9f9f7;color:#0b0b0b;
+      display:grid;place-items:center;min-height:100vh;margin:0}
+ form{background:#fcfcfb;border:1px solid rgba(11,11,11,.1);border-radius:12px;
+      padding:26px 28px;width:320px}
+ h1{font-size:17px;margin:0 0 18px}
+ label{display:block;font-size:12px;color:#52514e;margin:12px 0 4px}
+ input{width:100%;padding:9px 11px;border:1px solid #c3c2b7;border-radius:7px;font:inherit}
+ button{margin-top:18px;width:100%;padding:10px;border:0;border-radius:999px;
+        background:#0ca30c;color:#fff;font:inherit;font-weight:600;cursor:pointer}
+ .err{color:#d03b3b;font-size:13px;margin-top:12px}
+ @media(prefers-color-scheme:dark){body{background:#0d0d0d;color:#fff}
+   form{background:#1a1a19;border-color:rgba(255,255,255,.1)}
+   input{background:#0d0d0d;color:#fff;border-color:#383835}}
+</style>
+<form method="post" action="/login">
+  <h1>Luma Bistro — Operations</h1>
+  <label for="u">Username</label><input id="u" name="username" autofocus autocomplete="username">
+  <label for="p">Password</label>
+  <input id="p" name="password" type="password" autocomplete="current-password">
+  <button type="submit">Sign in</button>
+  __ERROR__
+</form>"""
 
 
 def _log_dir() -> Path:
@@ -292,7 +334,13 @@ def _pct(values: list[float], pct: float) -> float | None:
 
 
 @app.get("/api/state")
-async def state() -> dict[str, Any]:
+async def state(_: str = Depends(require_user)) -> dict[str, Any]:
+    """Kept alongside the WebSocket: it is how the page renders its first
+    frame, and how anything scripted reads the console."""
+    return await state_payload()
+
+
+async def state_payload() -> dict[str, Any]:
     async with httpx.AsyncClient(base_url=settings.api_base_url, timeout=3.0) as client:
         try:
             health = (await client.get("/health")).is_success
@@ -334,7 +382,7 @@ async def state() -> dict[str, Any]:
 
 
 @app.post("/api/token")
-async def token() -> dict[str, str]:
+async def token(_: str = Depends(require_user)) -> dict[str, str]:
     """Mint a short-lived token so the browser can join a fresh room.
 
     The API secret never leaves the server -- the page receives only a JWT
@@ -363,6 +411,100 @@ async def token() -> dict[str, str]:
     return {"url": url, "room": room, "token": jwt}
 
 
+@app.get("/healthz")
+async def healthz() -> dict[str, str]:
+    """Liveness: is this process still able to answer at all?
+
+    Deliberately checks nothing downstream. A liveness probe that fails when a
+    dependency is down gets the container *restarted* for someone else's
+    outage, which turns a degraded reservation API into a crash-looping
+    console. Unauthenticated, because a load balancer cannot log in.
+    """
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz(response: Response) -> dict[str, Any]:
+    """Readiness: should traffic be sent here right now?
+
+    This one *does* check downstream, and returns 503 when a dependency the
+    console needs is unreachable -- that removes the instance from rotation
+    without killing it, so it recovers on its own when the dependency does.
+
+    Postgres and Redis are reported but not required: the console reads logs
+    and the reservation API, and works without either.
+    """
+    checks: dict[str, Any] = {}
+
+    try:
+        async with httpx.AsyncClient(base_url=settings.api_base_url, timeout=2.0) as client:
+            checks["reservation_api"] = (await client.get("/health")).is_success
+    except httpx.HTTPError:
+        checks["reservation_api"] = False
+
+    checks["logs_readable"] = _log_dir().exists()
+
+    if settings.database_url:
+        try:
+            from sqlalchemy import text
+            from sqlalchemy.ext.asyncio import create_async_engine
+
+            engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+            async with engine.connect() as conn:
+                await conn.execute(text("select 1"))
+            await engine.dispose()
+            checks["database"] = True
+        except Exception:
+            checks["database"] = False
+
+    if settings.redis_url:
+        cache = Cache(settings.redis_url)
+        checks["redis"] = await cache.ping()
+        await cache.aclose()
+
+    # Only the hard requirements gate readiness. Optional layers being down is
+    # worth reporting, not worth refusing traffic over.
+    required = ("reservation_api", "logs_readable")
+    ready = all(checks.get(name) for name in required)
+    if not ready:
+        response.status_code = 503
+    return {"ready": ready, "checks": checks}
+
+
+@app.websocket("/ws")
+async def live(ws: WebSocket) -> None:
+    """Push state when it changes, instead of the page re-fetching at 1 Hz.
+
+    The client polled the whole payload every second whether or not anything
+    had happened -- twelve availability probes and a full log re-parse per
+    tick, and still up to a second late. Here the server watches for change
+    and sends only when there is something to send, so a booking reaches the
+    screen in about a tenth of a second and an idle console costs nothing.
+
+    Authenticated from the session cookie. A WebSocket upgrade carries cookies
+    but cannot be given a 401 body, so an unauthenticated one is closed with
+    the policy-violation code rather than silently accepted.
+    """
+    if not auth.session_user(ws):  # type: ignore[arg-type]
+        await ws.close(code=1008)
+        return
+
+    await ws.accept()
+    previous: str | None = None
+    try:
+        while True:
+            payload = await state_payload()
+            # Compare before sending: an idle call would otherwise push an
+            # identical frame ten times a second.
+            encoded = json.dumps(payload, default=str, sort_keys=True)
+            if encoded != previous:
+                previous = encoded
+                await ws.send_text(encoded)
+            await asyncio.sleep(WS_TICK_S)
+    except (WebSocketDisconnect, RuntimeError):
+        return  # the browser navigated away; nothing to clean up
+
+
 app.mount(
     "/vendor",
     StaticFiles(directory=Path(__file__).resolve().parent / "vendor"),
@@ -370,11 +512,57 @@ app.mount(
 )
 
 
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(bad: int = 0) -> str:
+    return LOGIN_PAGE.replace(
+        "__ERROR__", '<p class="err">That username or password is wrong.</p>' if bad else ""
+    )
+
+
+@app.post("/login")
+async def login(username: str = Form(""), password: str = Form("")) -> RedirectResponse:
+    if not auth.verify(username, password):
+        return RedirectResponse("/login?bad=1", status_code=303)
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(
+        COOKIE_NAME,
+        auth.issue(username),
+        httponly=True,   # not readable from JavaScript, so XSS cannot lift it
+        samesite="lax",  # blocks cross-site form posts riding the session
+        max_age=8 * 3600,
+    )
+    return response
+
+
+@app.post("/logout")
+async def logout() -> RedirectResponse:
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(COOKIE_NAME)
+    return response
+
+
 @app.get("/", response_class=HTMLResponse)
-async def index() -> str:
-    return (Path(__file__).resolve().parent / "index.html").read_text()
+async def index(request: Request):
+    # A redirect rather than a 401: this is the one route a person types.
+    if not auth.session_user(request):
+        return RedirectResponse("/login", status_code=303)
+    return HTMLResponse((Path(__file__).resolve().parent / "index.html").read_text())
 
 
 if __name__ == "__main__":
-    print(f"Ops console  http://127.0.0.1:8100   (watching {settings.api_base_url})")
-    uvicorn.run(app, host="127.0.0.1", port=8100, log_level="warning")
+    # Loopback by default. This page shows customer names, dates, party sizes
+    # and partial phone numbers, so binding every interface is a decision, not
+    # a default -- on a laptop on a cafe network 0.0.0.0 publishes all of it.
+    # The container sets OPS_HOST=0.0.0.0 because a published port is the only
+    # way anything reaches it, and the sign-in gate is what guards it there.
+    host = os.getenv("OPS_HOST", "127.0.0.1")
+    port = int(os.getenv("OPS_PORT", "8100"))
+    shown = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+    print(f"Ops console  http://{shown}:{port}   (watching {settings.api_base_url})")
+    # Without this, a run with no OPS_PASSWORD generates one and never says
+    # what it is -- the console is then unreachable by design and unreachable
+    # in practice. It is the first thing anyone needs and the last thing they
+    # would think to look for.
+    for line in auth.banner():
+        print(line)
+    uvicorn.run(app, host=host, port=port, log_level="warning")

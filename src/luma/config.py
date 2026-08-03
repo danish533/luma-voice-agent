@@ -23,6 +23,17 @@ SLOT_MINUTES = 30  # table turn, from seed_data.json
 SERVICE_SLOTS: tuple[str, ...] = ("17:30", "18:00", "18:30", "19:00", "19:30", "20:00")
 BOOKABLE_DATES: tuple[str, ...] = ("2026-08-14", "2026-08-15", "2026-08-16")
 
+# The mock API returns its one and only 503 on the *first* availability request
+# for this date, and then behaves normally forever after.
+API_FAILURE_DATE = "2026-08-16"
+
+# Anything that touches availability in the background must skip that date.
+# Otherwise the single 503 is spent on a warm-up nobody is listening to, and
+# the transient-failure path -- retry, honest recovery, handoff -- can never be
+# demonstrated or observed on a live call. The agent still books that date
+# perfectly well; it just is not probed speculatively.
+PREWARM_DATES: tuple[str, ...] = tuple(d for d in BOOKABLE_DATES if d != API_FAILURE_DATE)
+
 
 def _env_float(key: str, default: float) -> float:
     try:
@@ -62,6 +73,11 @@ class Settings:
     log_dir: str
     log_level: str
 
+    # Both optional: with neither set the agent behaves exactly as it does on
+    # main, so the production layer can be adopted piecemeal.
+    database_url: str | None
+    redis_url: str | None
+
     @classmethod
     def from_env(cls) -> "Settings":
         provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
@@ -93,6 +109,8 @@ class Settings:
             # process removes a network round trip from it. "cloud" trades that
             # round trip for worker CPU, which is the better deal at scale.
             turn_detector=os.getenv("TURN_DETECTOR", "local").strip().lower(),
+            database_url=os.getenv("DATABASE_URL") or None,
+            redis_url=os.getenv("REDIS_URL") or None,
             log_dir=os.getenv("LUMA_LOG_DIR", "logs"),
             log_level=os.getenv("LUMA_LOG_LEVEL", "INFO").upper(),
         )

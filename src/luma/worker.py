@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from dotenv import load_dotenv
 from livekit.agents import JobContext, JobProcess, WorkerOptions, cli
@@ -23,7 +24,8 @@ from livekit.plugins import silero
 # the agent talk over people mid-sentence.
 from livekit.plugins.turn_detector import english as _turn_detector_en  # noqa: F401
 
-from .config import Settings
+from . import metrics
+from .config import PREWARM_DATES, SERVICE_SLOTS, Settings
 from .prompts import greeting
 from .runtime import build_runtime
 
@@ -49,6 +51,7 @@ async def entrypoint(ctx: JobContext) -> None:
         vad=ctx.proc.userdata.get("vad"),
     )
 
+    await runtime.begin()
     runtime.logger.log(
         "call_started",
         room=ctx.room.name,
@@ -60,6 +63,7 @@ async def entrypoint(ctx: JobContext) -> None:
     )
 
     async def _on_shutdown() -> None:
+        await runtime.finish()
         runtime.logger.log(
             "call_ended",
             latency=runtime.latency.summary(),
@@ -79,14 +83,9 @@ async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
     runtime.logger.log("room_connected", room=ctx.room.name)
 
-    # Warm the reservation API's connection while the caller is still hearing
-    # the greeting: TCP and TLS setup then lands off the critical path instead
-    # of inside the first tool call. Deliberately a health check and not an
-    # availability sweep -- caching which tables are free would mean answering
-    # from a snapshot, and this agent's central rule is that availability comes
-    # fresh from the API every time.
-    warm = asyncio.create_task(runtime.api.health())
-    warm.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+    # Warm the path while the caller is still hearing the greeting, so the
+    # first tool call is not also paying for TCP, TLS and a cold cache.
+    asyncio.create_task(_prewarm(runtime))
 
     await runtime.session.start(agent=runtime.agent, room=ctx.room)
     # A fixed greeting rather than a generated one: it is the one turn where
@@ -94,11 +93,56 @@ async def entrypoint(ctx: JobContext) -> None:
     await runtime.session.say(greeting(), allow_interruptions=True)
 
 
+async def _prewarm(runtime) -> None:
+    """Warm the connection, and the slot cache if Redis is configured.
+
+    Only the *listing* is prefetched. `check_availability` is never served from
+    cache: the write gate depends on it, and a booking authorised by a
+    90-second-old snapshot is a booking made on a guess. Prefetching the common
+    party sizes turns the usual opening question -- "what have you got on
+    Saturday?" -- from six round trips into none.
+
+    PREWARM_DATES, not BOOKABLE_DATES: warming the date the API is scripted to
+    fail on spends its single 503 on a request no caller is waiting for, which
+    silently removes the transient-failure path from anything you could observe.
+    """
+    try:
+        await runtime.api.health()
+        if not await runtime.cache.ping():
+            return
+        # Two and four cover most tables; anything else probes on demand.
+        for date in PREWARM_DATES:
+            for size in (2, 4):
+                if await runtime.cache.get_slots(date, size) is not None:
+                    continue
+                results = await asyncio.gather(
+                    *(runtime.api.check_availability(date, slot, size)
+                      for slot in SERVICE_SLOTS)
+                )
+                free = [
+                    slot for slot, r in zip(SERVICE_SLOTS, results)
+                    if r.ok and r.data.get("available")
+                ]
+                await runtime.cache.put_slots(date, size, free)
+        runtime.logger.log("prewarm_complete", dates=len(PREWARM_DATES))
+    except Exception as exc:  # warming is best-effort and must never fail a call
+        runtime.logger.log("prewarm_failed", error=str(exc))
+
+
 def main() -> None:
+    # Must happen before the worker forks any job process, or the children get
+    # their own private counters and the parent reports zeros forever.
+    multiproc_dir = os.getenv("PROMETHEUS_MULTIPROC_DIR", ".prometheus")
+    metrics.enable_multiprocess(multiproc_dir)
+
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
             prewarm_fnc=prewarm,
+            # Served on :{port}/metrics alongside LiveKit's own worker gauges,
+            # so Prometheus has one target per worker rather than two.
+            prometheus_port=int(os.getenv("METRICS_PORT", "9091")),
+            prometheus_multiproc_dir=multiproc_dir,
             # Keep a process warm. Without this the first call logs "no warmed
             # process available" and the caller waits several extra seconds in
             # silence before the greeting — long enough to say "hello? can you

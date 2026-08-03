@@ -2,3 +2,15 @@
 # Force CRLF on Windows scripts regardless of what the checkout does.
 *.ps1 text eol=crlf
 *.sh  text eol=lf
+
+# Everything that goes into a Linux container stays LF, whatever
+# core.autocrlf is set to on the machine doing the clone. Docker and Compose
+# both tolerate CRLF here (tested), but a stray \r in a RUN line or an env
+# value produces errors that point nowhere near the real cause, and pinning it
+# costs nothing.
+Dockerfile   text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.env        text eol=lf
+.env.example text eol=lf
+Makefile     text eol=lf

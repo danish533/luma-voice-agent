@@ -1,0 +1,227 @@
+# The whole demo, in one command.
+#
+#   cp .env.example .env      # fill in the keys
+#   docker compose up --build
+#   open http://localhost:8100
+#
+# Only the data services:      docker compose up -d postgres redis
+# Run the tests in the image:  docker compose run --rm tests
+# Stop everything:             docker compose down        (add -v to wipe data)
+#
+# Every published port is overridable, because 5432 and 8000 are the two most
+# commonly occupied ports on a developer machine and "address already in use"
+# should not be the first thing anyone sees:
+#
+#   POSTGRES_PORT=55432 docker compose up -d
+
+x-app: &app
+  # All three application roles run from one image, so it is built once and
+  # reused. Without `image:` here, compose builds the same Dockerfile three
+  # times under three different names.
+  build:
+    context: .
+  image: luma-voice-agent:local
+  env_file: .env
+  environment: &app-env
+    # These override whatever .env says, and they have to. .env holds host
+    # addresses -- localhost:8000, 127.0.0.1:5432 -- and inside a container
+    # localhost is that container. Compose gives `environment` precedence over
+    # `env_file`, so one file serves both the native and the containerised run.
+    RESERVATION_API_URL: http://reservation-api:8000
+    DATABASE_URL: postgresql+asyncpg://luma:luma@postgres:5432/luma
+    REDIS_URL: redis://redis:6379/0
+    LUMA_LOG_DIR: /app/logs
+    PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
+
+services:
+  # ------------------------------------------------------------- data layer
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: luma
+      POSTGRES_PASSWORD: luma
+      POSTGRES_DB: luma
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # The agent starts fast; without this it can reach a Postgres that is
+      # listening but not yet accepting queries.
+      test: ["CMD-SHELL", "pg_isready -U luma -d luma"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # appendonly so idempotency keys survive a restart. Losing them is not
+    # catastrophic -- the reservation API holds its own idempotency cache and
+    # the pre-write search still runs -- but it removes a layer for no reason.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # --------------------------------------------------------- reservation API
+  # The starter package's mock service, built from its own unmodified
+  # Dockerfile. State is in memory: restarting this container is a full reset,
+  # which is why the reset endpoint exists rather than a volume.
+  reservation-api:
+    build: ./mock_api
+    image: luma-reservation-api:local
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      # No curl in that image, and adding one would mean modifying a file the
+      # submission says is unmodified. Python is already there.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import urllib.request, sys
+          sys.exit(0 if urllib.request.urlopen(
+              "http://localhost:8000/health", timeout=2).status == 200 else 1)
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+  # ------------------------------------------------------------- migrations
+  # Runs to completion and exits; the agent and the console wait on it. The
+  # application never creates tables on a server database -- letting both
+  # Alembic and `create_all` own the schema guarantees drift. See store/db.py.
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ----------------------------------------------------------- agent worker
+  agent:
+    <<: *app
+    # `start`, not `dev`: dev mode runs a file watcher and reloads on change,
+    # which in a container means reloading on nothing, forever.
+    command: ["python", "-m", "luma.worker", "start"]
+    # The worker forks a job process per call plus an inference process. PID 1
+    # in a container does not reap orphans, so without an init the container
+    # slowly fills with zombies over a long-running session.
+    init: true
+    environment:
+      <<: *app-env
+      METRICS_PORT: "9091"
+    ports:
+      # Prometheus scrape target, alongside LiveKit's own worker gauges.
+      - "${METRICS_PORT:-9091}:9091"
+    volumes:
+      # Shared with the console, which renders these JSONL lines as the live
+      # event feed. A named volume rather than a bind mount: the container runs
+      # unprivileged, and a host directory owned by a different uid is the
+      # classic "permission denied" that only shows up on Linux.
+      - logs:/app/logs
+    depends_on:
+      reservation-api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # The worker's own endpoint, which returns 503 if the inference process
+      # died or the LiveKit connection failed -- both of which leave the
+      # process running and the agent useless, so a bare liveness check would
+      # report healthy through exactly the outages that matter.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import urllib.request, sys
+          sys.exit(0 if urllib.request.urlopen(
+              "http://localhost:8081/", timeout=3).status == 200 else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    # SIGTERM puts the worker into drain: it stops accepting jobs and waits for
+    # in-flight calls, for up to `drain_timeout` (an hour by default). Docker's
+    # own default is to SIGKILL after 10s, so a `compose down` during a call
+    # would cut it off mid-sentence. 30s is the demo compromise; a real deploy
+    # sets this to the longest call it is willing to wait out.
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # ------------------------------------------------------------ ops console
+  ops:
+    <<: *app
+    command: ["python", "ops/server.py"]
+    environment:
+      <<: *app-env
+      # Loopback is the default in server.py, and inside a container that means
+      # nothing outside it can connect. The published port plus the sign-in
+      # gate is what makes this safe here.
+      OPS_HOST: "0.0.0.0"
+      OPS_PORT: "8100"
+    ports:
+      - "${OPS_PORT:-8100}:8100"
+    volumes:
+      - logs:/app/logs
+    depends_on:
+      reservation-api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Liveness, not readiness: a failing readiness check here would restart
+      # the console every time the reservation API hiccuped.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import urllib.request, sys
+          sys.exit(0 if urllib.request.urlopen(
+              "http://localhost:8100/healthz", timeout=3).status == 200 else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ tests
+  # Not started by `up` -- it has a profile, so it only runs when asked:
+  #   docker compose run --rm tests
+  # Same image as the agent, so this exercises what actually ships.
+  #
+  # It resets the reservation API between tests, which is the only way to assert
+  # against known state. Do not run it in the middle of a demo.
+  tests:
+    <<: *app
+    profiles: ["tools"]
+    # No cache plugin: /app is root-owned and the container runs unprivileged,
+    # so pytest would warn that it cannot write .pytest_cache. The directory is
+    # read-only on purpose; the warning is the only thing worth removing.
+    command: ["pytest", "-q", "-p", "no:cacheprovider"]
+    depends_on:
+      reservation-api:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  pgdata:
+  redisdata:
+  logs:
