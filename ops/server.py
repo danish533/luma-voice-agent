@@ -30,12 +30,14 @@ import uvicorn  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, WebSocket  # noqa: E402
 from fastapi import WebSocketDisconnect  # noqa: E402
+from fastapi import Response  # noqa: E402
 from fastapi.responses import HTMLResponse, RedirectResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from livekit import api as lk_api  # noqa: E402
 
 from luma.config import SERVICE_SLOTS, Settings  # noqa: E402
 from luma.obs import redact_phone  # noqa: E402
+from luma.store import Cache  # noqa: E402
 
 from auth import COOKIE_NAME, Auth  # noqa: E402
 
@@ -407,6 +409,66 @@ async def token(_: str = Depends(require_user)) -> dict[str, str]:
         .to_jwt()
     )
     return {"url": url, "room": room, "token": jwt}
+
+
+@app.get("/healthz")
+async def healthz() -> dict[str, str]:
+    """Liveness: is this process still able to answer at all?
+
+    Deliberately checks nothing downstream. A liveness probe that fails when a
+    dependency is down gets the container *restarted* for someone else's
+    outage, which turns a degraded reservation API into a crash-looping
+    console. Unauthenticated, because a load balancer cannot log in.
+    """
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz(response: Response) -> dict[str, Any]:
+    """Readiness: should traffic be sent here right now?
+
+    This one *does* check downstream, and returns 503 when a dependency the
+    console needs is unreachable -- that removes the instance from rotation
+    without killing it, so it recovers on its own when the dependency does.
+
+    Postgres and Redis are reported but not required: the console reads logs
+    and the reservation API, and works without either.
+    """
+    checks: dict[str, Any] = {}
+
+    try:
+        async with httpx.AsyncClient(base_url=settings.api_base_url, timeout=2.0) as client:
+            checks["reservation_api"] = (await client.get("/health")).is_success
+    except httpx.HTTPError:
+        checks["reservation_api"] = False
+
+    checks["logs_readable"] = _log_dir().exists()
+
+    if settings.database_url:
+        try:
+            from sqlalchemy import text
+            from sqlalchemy.ext.asyncio import create_async_engine
+
+            engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+            async with engine.connect() as conn:
+                await conn.execute(text("select 1"))
+            await engine.dispose()
+            checks["database"] = True
+        except Exception:
+            checks["database"] = False
+
+    if settings.redis_url:
+        cache = Cache(settings.redis_url)
+        checks["redis"] = await cache.ping()
+        await cache.aclose()
+
+    # Only the hard requirements gate readiness. Optional layers being down is
+    # worth reporting, not worth refusing traffic over.
+    required = ("reservation_api", "logs_readable")
+    ready = all(checks.get(name) for name in required)
+    if not ready:
+        response.status_code = 503
+    return {"ready": ready, "checks": checks}
 
 
 @app.websocket("/ws")

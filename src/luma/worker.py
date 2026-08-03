@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from dotenv import load_dotenv
 from livekit.agents import JobContext, JobProcess, WorkerOptions, cli
@@ -23,6 +24,7 @@ from livekit.plugins import silero
 # the agent talk over people mid-sentence.
 from livekit.plugins.turn_detector import english as _turn_detector_en  # noqa: F401
 
+from . import metrics
 from .config import BOOKABLE_DATES, SERVICE_SLOTS, Settings
 from .prompts import greeting
 from .runtime import build_runtime
@@ -124,10 +126,19 @@ async def _prewarm(runtime) -> None:
 
 
 def main() -> None:
+    # Must happen before the worker forks any job process, or the children get
+    # their own private counters and the parent reports zeros forever.
+    multiproc_dir = os.getenv("PROMETHEUS_MULTIPROC_DIR", ".prometheus")
+    metrics.enable_multiprocess(multiproc_dir)
+
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
             prewarm_fnc=prewarm,
+            # Served on :{port}/metrics alongside LiveKit's own worker gauges,
+            # so Prometheus has one target per worker rather than two.
+            prometheus_port=int(os.getenv("METRICS_PORT", "9091")),
+            prometheus_multiproc_dir=multiproc_dir,
             # Keep a process warm. Without this the first call logs "no warmed
             # process available" and the caller waits several extra seconds in
             # silence before the greeting — long enough to say "hello? can you

@@ -14,6 +14,7 @@ from typing import Any
 
 from livekit.agents import Agent, RunContext, function_tool
 
+from .. import metrics
 from ..api_client import ReservationApi, booking_idempotency_key
 from ..config import MAX_STANDARD_PARTY_SIZE, SERVICE_SLOTS
 from ..normalize import (
@@ -60,6 +61,8 @@ class LumaAgent(Agent):
         self._log.log("tool_call", tool=tool, arguments=arguments)
 
     def _finish(self, tool: str, arguments: dict, result: dict) -> dict:
+        status = str(result.get("status"))
+        metrics.TOOL_CALLS.labels(tool=tool, status=status).inc()
         self._state.record_tool_call(tool, arguments, result)
         self._log.log("tool_result", tool=tool, status=result.get("status"))
         reservation = result.get("reservation") or {}
@@ -92,6 +95,7 @@ class LumaAgent(Agent):
             }
 
         self._state.handoff = result.data
+        metrics.HANDOFFS.labels(reason=reason[:40]).inc()
         self._log.log(
             "handoff_queued",
             handoff_id=result.data.get("handoff_id"),
@@ -342,6 +346,7 @@ class LumaAgent(Agent):
             return self._finish("create_reservation", args, refusal)
         if refusal := guards.not_already_created(self._state, iso_date, hhmm, size, e164):
             self._log.log("duplicate_prevented", layer="in_call_memo")
+            metrics.DUPLICATES_PREVENTED.labels(layer="in_call_memo").inc()
             return self._finish("create_reservation", args, refusal)
         if refusal := guards.availability_was_verified(self._state, iso_date, hhmm, size):
             return self._finish("create_reservation", args, refusal)
@@ -353,6 +358,7 @@ class LumaAgent(Agent):
             self._api, e164, iso_date, hhmm
         ):
             self._log.log("duplicate_prevented", layer="pre_write_search")
+            metrics.DUPLICATES_PREVENTED.labels(layer="pre_write_search").inc()
             return self._finish("create_reservation", args, refusal)
 
         # Deterministic, so a retry lands on the same record rather than making
@@ -360,6 +366,7 @@ class LumaAgent(Agent):
         key = booking_idempotency_key(clean_name, e164, iso_date, hhmm, size)
         if refusal := await guards.not_claimed_by_another_worker(self._cache, key):
             self._log.log("duplicate_prevented", layer="redis_idempotency")
+            metrics.DUPLICATES_PREVENTED.labels(layer="redis_idempotency").inc()
             return self._finish("create_reservation", args, refusal)
 
         result = await self._api.create_reservation(

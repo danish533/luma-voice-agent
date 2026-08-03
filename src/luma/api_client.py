@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 
+from . import metrics
 from .config import Settings
 from .obs import JsonLogger, LatencyBook, timed
 
@@ -120,6 +121,13 @@ class ReservationApi:
                 error_code=result.error_code,
             )
             self._latency.record_api(
+                method=method,
+                path=path,
+                status=result.status,
+                ms=result.latency_ms,
+                attempts=attempt,
+            )
+            metrics.record_api_call(
                 method=method,
                 path=path,
                 status=result.status,

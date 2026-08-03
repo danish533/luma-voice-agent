@@ -16,6 +16,7 @@ from livekit.agents import AgentSession
 from .agent import LumaAgent
 from .api_client import ReservationApi
 from .config import Settings
+from . import metrics
 from .obs import JsonLogger, LatencyBook, TurnLatency
 from .store import Cache, CallStore
 from .state import CallState
@@ -56,6 +57,7 @@ class Runtime:
         from .obs import last4
 
         summary = self.latency.summary()
+        metrics.CALLS.labels(outcome=self.outcome()).inc()
         await self.store.call_ended(
             self.state.session_id,
             ended_at=datetime.now(timezone.utc),
@@ -297,6 +299,7 @@ def _wire_observability(
             return  # the fixed greeting has no preceding user turn to measure
         # A barge-in truncates the turn, so its timings would drag the
         # percentiles toward numbers no caller experienced.
+        metrics.record_turn(turn, interrupted=interrupted)
         if not interrupted:
             latency.record_turn(turn)
         logger.log("turn_latency", interrupted=interrupted, **turn.as_dict())

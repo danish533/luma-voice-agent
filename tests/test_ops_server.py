@@ -154,3 +154,52 @@ def test_the_websocket_pushes_state_and_needs_a_session(client: TestClient) -> N
     with client.websocket_connect("/ws") as ws:
         payload = ws.receive_json()
     assert set(payload) >= {"api_online", "grid", "events", "stats", "reservations"}
+
+
+# ------------------------------------------------------------ health probes
+
+
+def test_liveness_needs_no_session_and_checks_nothing_downstream(client: TestClient) -> None:
+    """A load balancer cannot sign in, and a liveness probe that fails on a
+    dependency outage gets the container restarted for someone else's
+    problem -- turning a degraded API into a crash-looping console."""
+    r = client.get("/healthz")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+
+def test_readiness_reports_every_dependency_it_checks(client: TestClient) -> None:
+    body = client.get("/readyz").json()
+    assert {"reservation_api", "logs_readable"} <= set(body["checks"])
+    assert isinstance(body["ready"], bool)
+
+
+def test_readiness_refuses_traffic_when_the_reservation_api_is_unreachable(
+    client: TestClient, monkeypatch
+) -> None:
+    """503 removes the instance from rotation without killing it, so it
+    recovers on its own when the dependency does.
+
+    Pointed at a dead port rather than relying on whether a server happens to
+    be running -- an ambient dependency makes the test pass or fail for reasons
+    that have nothing to do with the code.
+    """
+    import dataclasses
+
+    import server
+
+    # Settings is frozen -- correct, since config should not mutate at runtime --
+    # so swap the whole object rather than poking a field.
+    monkeypatch.setattr(
+        server, "settings", dataclasses.replace(server.settings, api_base_url="http://127.0.0.1:1")
+    )
+    response = client.get("/readyz")
+    assert response.status_code == 503
+    body = response.json()
+    assert body["ready"] is False
+    assert body["checks"]["reservation_api"] is False
+
+
+def test_probes_are_not_behind_the_session(client: TestClient) -> None:
+    for path in ("/healthz", "/readyz"):
+        assert client.get(path).status_code in (200, 503), f"{path} must not 401"
